@@ -6,7 +6,16 @@ const DEFAULT_BASE_URL = 'http://localhost:11434';
 
 interface OllamaMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string;
+  content?: string;
+  tool_name?: string;
+  tool_calls?: Array<{
+    type: 'function';
+    function: {
+      index: number;
+      name: string;
+      arguments: Record<string, unknown>;
+    };
+  }>;
 }
 
 interface OllamaStreamChunk {
@@ -95,6 +104,7 @@ export class OllamaAdapter extends BaseAdapter {
     let promptTokens = 0;
     let evalTokens = 0;
     let stopReason = 'end_turn';
+    const toolCalls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
 
     try {
       while (true) {
@@ -122,14 +132,10 @@ export class OllamaAdapter extends BaseAdapter {
 
           if (chunk.message?.tool_calls) {
             for (const tc of chunk.message.tool_calls) {
-              yield {
-                type: 'tool_call',
-                toolCall: {
-                  id: `ollama-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-                  name: tc.function.name,
-                  input: tc.function.arguments,
-                },
-              };
+              toolCalls.push({
+                name: tc.function.name,
+                arguments: tc.function.arguments,
+              });
             }
           }
 
@@ -140,9 +146,22 @@ export class OllamaAdapter extends BaseAdapter {
           }
         }
       }
+
+      for (let index = 0; index < toolCalls.length; index++) {
+        const tc = toolCalls[index];
+        yield {
+          type: 'tool_call',
+          toolCall: {
+            id: `ollama-tc-${Date.now()}-${index}`,
+            name: tc.name,
+            input: tc.arguments,
+          },
+        };
+      }
+
       yield {
         type: 'done',
-        stopReason,
+        stopReason: toolCalls.length > 0 ? 'tool_use' : stopReason,
         inputTokens: promptTokens,
         outputTokens: evalTokens,
       };
@@ -201,28 +220,68 @@ export class OllamaAdapter extends BaseAdapter {
 
 function historyToOllama(messages: Message[], systemPrompt?: string): OllamaMessage[] {
   const result: OllamaMessage[] = [];
+  const toolNamesById = new Map<string, string>();
 
   if (systemPrompt) {
     result.push({ role: 'system', content: systemPrompt });
   }
 
+  for (const message of messages) {
+    if (typeof message.content === 'string') continue;
+    for (const block of message.content) {
+      if (block.type === 'tool_use') {
+        toolNamesById.set(block.id, block.name);
+      }
+    }
+  }
+
   for (const m of messages) {
     if (m.role === 'system') continue; // system prompt handled above
 
-    const content =
-      typeof m.content === 'string'
-        ? m.content
-        : m.content
-            .map((b) => {
-              if (b.type === 'text') return b.text;
-              if (b.type === 'tool_result') return b.content;
-              if (b.type === 'tool_use') return `[tool_use: ${b.name}]`;
-              return '';
-            })
-            .filter(Boolean)
-            .join('\n');
+    if (typeof m.content === 'string') {
+      result.push({ role: m.role, content: m.content });
+      continue;
+    }
 
-    result.push({ role: m.role, content });
+    const textContent = m.content
+      .filter((block) => block.type === 'text')
+      .map((block) => (block.type === 'text' ? block.text : ''))
+      .join('');
+
+    const toolUses = m.content.filter((block) => block.type === 'tool_use');
+    if (toolUses.length > 0) {
+      const assistantMessage: OllamaMessage = {
+        role: 'assistant',
+        tool_calls: toolUses.map((block, index) => {
+          if (block.type !== 'tool_use') {
+            throw new Error('unreachable');
+          }
+          return {
+            type: 'function',
+            function: {
+              index,
+              name: block.name,
+              arguments: block.input,
+            },
+          };
+        }),
+      };
+      if (textContent) {
+        assistantMessage.content = textContent;
+      }
+      result.push(assistantMessage);
+    } else if (textContent) {
+      result.push({ role: m.role, content: textContent });
+    }
+
+    for (const block of m.content) {
+      if (block.type !== 'tool_result') continue;
+      result.push({
+        role: 'tool',
+        tool_name: toolNamesById.get(block.tool_use_id) ?? block.tool_use_id,
+        content: block.content,
+      });
+    }
   }
 
   return result;
