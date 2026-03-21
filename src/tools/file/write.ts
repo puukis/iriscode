@@ -1,12 +1,12 @@
 import { writeFile, mkdir } from 'fs/promises';
 import { dirname } from 'path';
-import { Tool } from '../index.ts';
-import type { ToolDefinitionSchema } from '../../shared/types.ts';
-import { ToolError } from '../../shared/errors.ts';
+import type { Tool, ToolExecutionContext } from '../index.ts';
+import type { ToolDefinitionSchema, ToolResult } from '../../shared/types.ts';
+import { fail, ok } from '../result.ts';
 
 export class WriteFileTool implements Tool {
   readonly definition: ToolDefinitionSchema = {
-    name: 'write_file',
+    name: 'write',
     description: 'Write content to a file, creating parent directories if needed.',
     inputSchema: {
       type: 'object',
@@ -18,27 +18,30 @@ export class WriteFileTool implements Tool {
     },
   };
 
-  async execute(input: Record<string, unknown>): Promise<string> {
+  async execute(
+    input: Record<string, unknown>,
+    _context: ToolExecutionContext,
+  ): Promise<ToolResult> {
     const path = input['path'];
     const content = input['content'];
 
     if (typeof path !== 'string' || !path) {
-      throw new ToolError('path must be a non-empty string', 'write_file');
+      return fail('write', 'path must be a non-empty string');
     }
     if (typeof content !== 'string') {
-      throw new ToolError('content must be a string', 'write_file');
+      return fail('write', 'content must be a string');
     }
 
     try {
       await mkdir(dirname(path), { recursive: true });
       await writeFile(path, content, 'utf-8');
     } catch (err) {
-      throw new ToolError(
+      return fail(
+        'write',
         `Failed to write "${path}": ${err instanceof Error ? err.message : String(err)}`,
-        'write_file',
       );
     }
 
-    return `Written ${content.length} characters to ${path}`;
+    return ok(`Written ${content.length} characters to ${path}`);
   }
 }

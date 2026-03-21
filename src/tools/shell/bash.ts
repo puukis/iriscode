@@ -1,6 +1,6 @@
-import { Tool } from '../index.ts';
-import type { ToolDefinitionSchema } from '../../shared/types.ts';
-import { ToolError } from '../../shared/errors.ts';
+import type { Tool, ToolExecutionContext } from '../index.ts';
+import type { ToolDefinitionSchema, ToolResult } from '../../shared/types.ts';
+import { fail, ok } from '../result.ts';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
@@ -18,10 +18,13 @@ export class BashTool implements Tool {
     },
   };
 
-  async execute(input: Record<string, unknown>): Promise<string> {
+  async execute(
+    input: Record<string, unknown>,
+    _context: ToolExecutionContext,
+  ): Promise<ToolResult> {
     const command = input['command'];
     if (typeof command !== 'string' || !command) {
-      throw new ToolError('command must be a non-empty string', 'bash');
+      return fail('bash', 'command must be a non-empty string');
     }
     const timeoutMs =
       typeof input['timeout_ms'] === 'number' ? input['timeout_ms'] : DEFAULT_TIMEOUT_MS;
@@ -34,7 +37,7 @@ export class BashTool implements Tool {
     const timeout = new Promise<never>((_, reject) =>
       setTimeout(() => {
         proc.kill();
-        reject(new ToolError(`Command timed out after ${timeoutMs}ms`, 'bash'));
+        reject(new Error(`Command timed out after ${timeoutMs}ms`));
       }, timeoutMs),
     );
 
@@ -49,18 +52,17 @@ export class BashTool implements Tool {
         timeout,
       ]);
     } catch (err) {
-      if (err instanceof ToolError) throw err;
-      throw new ToolError(
-        `bash error: ${err instanceof Error ? err.message : String(err)}`,
+      return fail(
         'bash',
+        `bash error: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
 
     const exitCode = await proc.exited;
     const combined = [stdout, stderr].filter(Boolean).join('\n');
     if (exitCode !== 0) {
-      return `Exit code: ${exitCode}\n${combined}`;
+      return ok(`Exit code: ${exitCode}\n${combined}`);
     }
-    return combined || '(no output)';
+    return ok(combined || '(no output)');
   }
 }

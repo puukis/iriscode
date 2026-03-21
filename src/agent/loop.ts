@@ -1,18 +1,27 @@
 import type { BaseAdapter } from '../models/base-adapter.ts';
-import type { ToolRegistry } from '../tools/index.ts';
+import type { ModelRegistry } from '../models/registry.ts';
 import type { PermissionsEngine } from '../permissions/engine.ts';
+import type { CostTracker } from '../cost/tracker.ts';
 import type { Message, ContentBlock } from '../shared/types.ts';
 import { ToolError } from '../shared/errors.ts';
 import { bus } from '../shared/events.ts';
 import { logger } from '../shared/logger.ts';
+import type { LoadedSkill, ToolExecutionContext, ToolRegistry } from '../tools/index.ts';
 
 export interface AgentLoopOptions {
   adapter: BaseAdapter;
   tools: ToolRegistry;
   permissions: PermissionsEngine;
+  modelRegistry: ModelRegistry;
   systemPrompt?: string;
   maxTokens?: number;
   maxIterations?: number;
+  cwd?: string;
+  askUser?: (question: string) => Promise<string>;
+  runSubagent?: (description: string, model?: string) => Promise<string>;
+  costTracker?: CostTracker;
+  loadedSkills?: LoadedSkill[];
+  subagentDepth?: number;
   /** Called when the agent produces text output */
   onText?: (text: string) => void;
   /** Called before a tool executes — return false to deny */
@@ -40,9 +49,16 @@ export async function runAgentLoop(
     adapter,
     tools,
     permissions,
+    modelRegistry,
     systemPrompt,
     maxTokens,
     maxIterations = 10,
+    cwd = process.cwd(),
+    askUser,
+    runSubagent,
+    costTracker,
+    loadedSkills = [],
+    subagentDepth = 0,
     onText,
     onToolRequest,
   } = options;
@@ -59,10 +75,11 @@ export async function runAgentLoop(
       iterations++;
 
       const toolDefs = tools.getDefinitions();
+      const effectiveSystemPrompt = composeSystemPrompt(systemPrompt, loadedSkills);
       const streamParams = {
         messages: history,
         tools: toolDefs,
-        systemPrompt,
+        systemPrompt: effectiveSystemPrompt,
         maxTokens,
       };
 
@@ -127,8 +144,30 @@ export async function runAgentLoop(
           }
 
           logger.debug(`Executing tool: ${tc.name}`, JSON.stringify(tc.input));
-          resultContent = await tool.execute(tc.input);
-          bus.emit('tool:end', { name: tc.name, durationMs: Date.now() - startMs });
+          const toolContext: ToolExecutionContext = {
+            history,
+            cwd,
+            model: `${adapter.provider}/${adapter.modelId}`,
+            adapter,
+            modelRegistry,
+            registry: tools,
+            permissions,
+            loadedSkills,
+            subagentDepth,
+            baseSystemPrompt: systemPrompt,
+            askUser,
+            runSubagent,
+            costTracker,
+          };
+          const toolResult = await tool.execute(tc.input, toolContext);
+          resultContent = toolResult.content;
+          isError = toolResult.isError === true;
+
+          if (isError) {
+            bus.emit('tool:error', { name: tc.name, error: resultContent });
+          } else {
+            bus.emit('tool:end', { name: tc.name, durationMs: Date.now() - startMs });
+          }
         } catch (err) {
           isError = true;
           resultContent = err instanceof Error ? err.message : String(err);
@@ -157,4 +196,16 @@ export async function runAgentLoop(
   }
 
   return { finalText, totalInputTokens, totalOutputTokens, iterations };
+}
+
+function composeSystemPrompt(basePrompt: string | undefined, loadedSkills: LoadedSkill[]): string | undefined {
+  if (loadedSkills.length === 0) {
+    return basePrompt;
+  }
+
+  const skillPrompt = loadedSkills
+    .map((skill) => `Loaded skill "${skill.name}" from ${skill.path}:\n${skill.instructions}`)
+    .join('\n\n');
+
+  return [basePrompt, skillPrompt].filter(Boolean).join('\n\n');
 }

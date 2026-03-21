@@ -1,6 +1,8 @@
 import type { DiffResult } from './types.ts';
 
 export interface IrisEvents {
+  'agent:start': { depth: number; model: string; description: string };
+  'agent:done': { depth: number; model: string; description: string; response: string };
   'diff:ready': DiffResult;
   'session:start': { model: string };
   'session:end': { totalInputTokens: number; totalOutputTokens: number };

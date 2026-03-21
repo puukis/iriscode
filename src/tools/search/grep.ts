@@ -1,7 +1,7 @@
 import { readFile } from 'fs/promises';
-import { Tool } from '../index.ts';
-import type { ToolDefinitionSchema } from '../../shared/types.ts';
-import { ToolError } from '../../shared/errors.ts';
+import type { Tool, ToolExecutionContext } from '../index.ts';
+import type { ToolDefinitionSchema, ToolResult } from '../../shared/types.ts';
+import { fail, ok } from '../result.ts';
 
 export class GrepTool implements Tool {
   readonly definition: ToolDefinitionSchema = {
@@ -21,15 +21,18 @@ export class GrepTool implements Tool {
     },
   };
 
-  async execute(input: Record<string, unknown>): Promise<string> {
+  async execute(
+    input: Record<string, unknown>,
+    _context: ToolExecutionContext,
+  ): Promise<ToolResult> {
     const pattern = input['pattern'];
     const pathOrGlob = input['path'];
 
     if (typeof pattern !== 'string' || !pattern) {
-      throw new ToolError('pattern must be a non-empty string', 'grep');
+      return fail('grep', 'pattern must be a non-empty string');
     }
     if (typeof pathOrGlob !== 'string' || !pathOrGlob) {
-      throw new ToolError('path must be a non-empty string', 'grep');
+      return fail('grep', 'path must be a non-empty string');
     }
 
     const flags = input['case_insensitive'] === true ? 'i' : '';
@@ -37,14 +40,12 @@ export class GrepTool implements Tool {
     try {
       regex = new RegExp(pattern, flags);
     } catch {
-      throw new ToolError(`Invalid regex: ${pattern}`, 'grep');
+      return fail('grep', `Invalid regex: ${pattern}`);
     }
 
     const g = new Bun.Glob(pathOrGlob);
     const files = [...g.scanSync({ cwd: process.cwd(), onlyFiles: true })];
-    if (files.length === 0) {
-      return 'No files matched the path pattern.';
-    }
+    if (files.length === 0) return ok('No files matched the path pattern.');
 
     const results: string[] = [];
     for (const file of files.sort()) {
@@ -62,7 +63,7 @@ export class GrepTool implements Tool {
       }
     }
 
-    if (results.length === 0) return 'No matches found.';
-    return results.join('\n');
+    if (results.length === 0) return ok('No matches found.');
+    return ok(results.join('\n'));
   }
 }

@@ -17,7 +17,7 @@ export interface ToolCall {
 }
 
 export interface ToolResult {
-  toolUseId: string;
+  toolUseId?: string;
   content: string;
   isError?: boolean;
 }

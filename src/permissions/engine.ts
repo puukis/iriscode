@@ -5,18 +5,31 @@ import { PermissionDeniedError } from '../shared/errors.ts';
  * Tools that are always allowed regardless of mode.
  */
 const ALWAYS_ALLOWED = new Set([
+  'read',
   'read_file',
   'glob',
   'grep',
+  'web-search',
+  'web-fetch',
+  'git-status',
+  'git-diff',
+  'tool-search',
+  'skill',
 ]);
 
 /**
  * Tools that require explicit approval in 'default' mode.
  */
 const REQUIRES_APPROVAL = new Set([
+  'write',
   'write_file',
+  'edit',
   'edit_file',
   'bash',
+  'git-commit',
+  'task',
+  'ask-user',
+  'todo-write',
 ]);
 
 export class PermissionsEngine {

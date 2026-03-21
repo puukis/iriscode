@@ -1,25 +1,24 @@
 #!/usr/bin/env bun
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { render, Box, Text } from 'ink';
 import TextInput from 'ink-text-input';
-import { loadConfig } from '../config/loader.ts';
-import { createDefaultRegistry, parseModelString } from '../models/registry.ts';
-import { ToolRegistry } from '../tools/index.ts';
-import { ReadFileTool } from '../tools/file/read.ts';
-import { WriteFileTool } from '../tools/file/write.ts';
-import { EditFileTool } from '../tools/file/edit.ts';
-import { BashTool } from '../tools/shell/bash.ts';
-import { GlobTool } from '../tools/search/glob.ts';
-import { GrepTool } from '../tools/search/grep.ts';
-import { PermissionsEngine } from '../permissions/engine.ts';
 import { runAgentLoop } from '../agent/loop.ts';
+import { runSubagentTask } from '../agent/orchestrator.ts';
+import { buildDefaultSystemPrompt } from '../agent/system-prompt.ts';
+import { loadConfig } from '../config/loader.ts';
 import { costTracker } from '../cost/tracker.ts';
+import { createDefaultRegistry as createModelRegistry, parseModelString } from '../models/registry.ts';
+import { PermissionsEngine } from '../permissions/engine.ts';
 import { logger } from '../shared/logger.ts';
 import type { Message } from '../shared/types.ts';
-import { runModelsCommand } from './commands/models.ts';
 import { runCostCommand } from './commands/cost.ts';
+import { runModelsCommand } from './commands/models.ts';
+import { runRunCommand } from './commands/run.ts';
+import {
+  createDefaultRegistry as createToolRegistry,
+  type LoadedSkill,
+} from '../tools/index.ts';
 
-// ---------- Parse CLI args ----------
 const args = process.argv.slice(2);
 const subcommand = args[0];
 
@@ -30,7 +29,6 @@ for (let i = 0; i < args.length; i++) {
   }
 }
 
-// ---------- Subcommand dispatch ----------
 if (subcommand === 'models') {
   await runModelsCommand();
   process.exit(0);
@@ -41,31 +39,27 @@ if (subcommand === 'cost') {
   process.exit(0);
 }
 
-// ---------- Bootstrap ----------
+if (subcommand === 'run') {
+  try {
+    await runRunCommand(args.slice(1), { modelOverride });
+    process.exit(0);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`${message}\n`);
+    process.exit(1);
+  }
+}
+
 const config = loadConfig();
 logger.setLevel(config.logLevel as Parameters<typeof logger.setLevel>[0]);
 
 const modelString = modelOverride ?? config.defaultModel;
 
-// ---------- Tool registry ----------
-function buildToolRegistry(): ToolRegistry {
-  const registry = new ToolRegistry();
-  registry.register(new ReadFileTool());
-  registry.register(new WriteFileTool());
-  registry.register(new EditFileTool());
-  registry.register(new BashTool());
-  registry.register(new GlobTool());
-  registry.register(new GrepTool());
-  return registry;
-}
-
-// ---------- Chat message type for UI ----------
 interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   text: string;
 }
 
-// ---------- App component ----------
 function App({ modelLabel }: { modelLabel: string }) {
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([
@@ -73,40 +67,97 @@ function App({ modelLabel }: { modelLabel: string }) {
   ]);
   const [running, setRunning] = useState(false);
   const [sessionCost, setSessionCost] = useState(0);
+  const [pendingQuestion, setPendingQuestion] = useState<string | null>(null);
+  const [questionInput, setQuestionInput] = useState('');
   const historyRef = useRef<Message[]>([]);
+  const loadedSkillsRef = useRef<LoadedSkill[]>([]);
+  const pendingQuestionResolverRef = useRef<((answer: string) => void) | null>(null);
+
+  const askUser = useCallback(async (question: string): Promise<string> => {
+    if (pendingQuestionResolverRef.current) {
+      throw new Error('Another ask-user prompt is already active');
+    }
+
+    return new Promise<string>((resolve) => {
+      pendingQuestionResolverRef.current = resolve;
+      setQuestionInput('');
+      setPendingQuestion(question);
+    });
+  }, []);
+
+  const handleQuestionSubmit = useCallback((value: string) => {
+    const resolve = pendingQuestionResolverRef.current;
+    if (!resolve) return;
+
+    pendingQuestionResolverRef.current = null;
+    setPendingQuestion(null);
+    setQuestionInput('');
+    setMessages((prev) => [...prev, { role: 'system', text: `[User input] ${value}` }]);
+    resolve(value);
+  }, []);
 
   const handleSubmit = useCallback(
     async (value: string) => {
       const trimmed = value.trim();
       if (!trimmed) return;
+
       setInput('');
       setMessages((prev) => [...prev, { role: 'user', text: trimmed }]);
-
       historyRef.current.push({ role: 'user', content: trimmed });
       setRunning(true);
 
       try {
-        const modelRegistry = await createDefaultRegistry();
+        const modelRegistry = await createModelRegistry();
         const { provider, modelId } = parseModelString(modelString);
-        const key = `${provider}/${modelId}`;
-        const adapter = modelRegistry.get(key);
-
-        const tools = buildToolRegistry();
+        const modelKey = `${provider}/${modelId}`;
+        const adapter = modelRegistry.get(modelKey);
+        const tools = createToolRegistry({ currentModel: modelKey });
         const permissions = new PermissionsEngine('default');
+        const baseSystemPrompt = buildDefaultSystemPrompt(
+          true,
+          tools.getDefinitions().map((tool) => tool.name),
+        );
 
         let assistantOutput = '';
         const result = await runAgentLoop(historyRef.current, {
           adapter,
           tools,
           permissions,
+          modelRegistry,
           maxIterations: 10,
-          systemPrompt:
-            'You are a helpful coding assistant. Only use tools (read_file, write_file, edit_file, bash, glob, grep) when the user explicitly asks you to interact with files or run commands. For conversational messages, respond with plain text only.',
+          cwd: process.cwd(),
+          systemPrompt: baseSystemPrompt,
+          costTracker,
+          loadedSkills: loadedSkillsRef.current,
+          subagentDepth: 0,
+          askUser,
+          runSubagent: (description, model) =>
+            runSubagentTask(
+              description,
+              {
+                currentModel: modelKey,
+                modelRegistry,
+                permissionMode: permissions.getMode(),
+                cwd: process.cwd(),
+                askUser,
+                costTracker,
+                loadedSkills: loadedSkillsRef.current,
+                onToolRequest: async (toolName, toolInput) => {
+                  const preview = JSON.stringify(toolInput).slice(0, 80);
+                  setMessages((prev) => [
+                    ...prev,
+                    { role: 'system', text: `[Tool: ${toolName} — ${preview}]` },
+                  ]);
+                  return true;
+                },
+              },
+              model,
+            ),
           onText: (text) => {
             assistantOutput += text;
           },
-          onToolRequest: async (toolName, input) => {
-            const preview = JSON.stringify(input).slice(0, 80);
+          onToolRequest: async (toolName, toolInput) => {
+            const preview = JSON.stringify(toolInput).slice(0, 80);
             setMessages((prev) => [
               ...prev,
               { role: 'system', text: `[Tool: ${toolName} — ${preview}]` },
@@ -115,35 +166,50 @@ function App({ modelLabel }: { modelLabel: string }) {
           },
         });
 
-        // Track cost
         costTracker.add(provider, modelId, result.totalInputTokens, result.totalOutputTokens);
         setSessionCost(costTracker.total().costUsd);
-
         setMessages((prev) => [...prev, { role: 'assistant', text: assistantOutput }]);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        setMessages((prev) => [...prev, { role: 'system', text: `Error: ${msg}` }]);
+        const message = err instanceof Error ? err.message : String(err);
+        setMessages((prev) => [...prev, { role: 'system', text: `Error: ${message}` }]);
       } finally {
+        pendingQuestionResolverRef.current = null;
+        setPendingQuestion(null);
+        setQuestionInput('');
         setRunning(false);
       }
     },
-    [],
+    [askUser, modelString],
   );
 
   return (
     <Box flexDirection="column" padding={1}>
-      {messages.map((m, i) => (
-        <Box key={i} marginBottom={1}>
+      {messages.map((message, index) => (
+        <Box key={index} marginBottom={1}>
           <Text
-            color={m.role === 'user' ? 'cyan' : m.role === 'system' ? 'yellow' : 'white'}
-            bold={m.role === 'user'}
+            color={message.role === 'user' ? 'cyan' : message.role === 'system' ? 'yellow' : 'white'}
+            bold={message.role === 'user'}
           >
-            {m.role === 'user' ? '> ' : m.role === 'system' ? '• ' : '  '}
-            {m.text}
+            {message.role === 'user' ? '> ' : message.role === 'system' ? '• ' : '  '}
+            {message.text}
           </Text>
         </Box>
       ))}
-      {running ? (
+
+      {pendingQuestion ? (
+        <Box flexDirection="column">
+          <Text color="yellow">{pendingQuestion}</Text>
+          <Box>
+            <Text color="cyan" bold>{'> '}</Text>
+            <TextInput
+              value={questionInput}
+              onChange={setQuestionInput}
+              onSubmit={handleQuestionSubmit}
+              placeholder="Type your answer..."
+            />
+          </Box>
+        </Box>
+      ) : running ? (
         <Text color="gray">thinking...</Text>
       ) : (
         <Box flexDirection="column">
@@ -167,6 +233,4 @@ function App({ modelLabel }: { modelLabel: string }) {
   );
 }
 
-// ---------- Entry ----------
-const modelLabel = modelString;
-render(<App modelLabel={modelLabel} />);
+render(<App modelLabel={modelString} />);

@@ -1,11 +1,11 @@
 import { readFile, writeFile } from 'fs/promises';
-import { Tool } from '../index.ts';
-import type { ToolDefinitionSchema } from '../../shared/types.ts';
-import { ToolError } from '../../shared/errors.ts';
+import type { Tool, ToolExecutionContext } from '../index.ts';
+import type { ToolDefinitionSchema, ToolResult } from '../../shared/types.ts';
+import { fail, ok } from '../result.ts';
 
 export class EditFileTool implements Tool {
   readonly definition: ToolDefinitionSchema = {
-    name: 'edit_file',
+    name: 'edit',
     description:
       'Replace an exact string in a file. The old_string must match exactly once in the file.',
     inputSchema: {
@@ -19,43 +19,40 @@ export class EditFileTool implements Tool {
     },
   };
 
-  async execute(input: Record<string, unknown>): Promise<string> {
+  async execute(
+    input: Record<string, unknown>,
+    _context: ToolExecutionContext,
+  ): Promise<ToolResult> {
     const path = input['path'];
     const oldString = input['old_string'];
     const newString = input['new_string'];
 
     if (typeof path !== 'string' || !path) {
-      throw new ToolError('path must be a non-empty string', 'edit_file');
+      return fail('edit', 'path must be a non-empty string');
     }
     if (typeof oldString !== 'string') {
-      throw new ToolError('old_string must be a string', 'edit_file');
+      return fail('edit', 'old_string must be a string');
     }
     if (typeof newString !== 'string') {
-      throw new ToolError('new_string must be a string', 'edit_file');
+      return fail('edit', 'new_string must be a string');
     }
 
     let content: string;
     try {
       content = await readFile(path, 'utf-8');
     } catch (err) {
-      throw new ToolError(
+      return fail(
+        'edit',
         `Failed to read "${path}": ${err instanceof Error ? err.message : String(err)}`,
-        'edit_file',
       );
     }
 
     const occurrences = countOccurrences(content, oldString);
     if (occurrences === 0) {
-      throw new ToolError(
-        `old_string not found in "${path}"`,
-        'edit_file',
-      );
+      return fail('edit', `old_string not found in "${path}"`);
     }
     if (occurrences > 1) {
-      throw new ToolError(
-        `old_string matches ${occurrences} times in "${path}" — must match exactly once`,
-        'edit_file',
-      );
+      return fail('edit', `old_string matches ${occurrences} times in "${path}" — must match exactly once`);
     }
 
     const newContent = content.replace(oldString, newString);
@@ -63,13 +60,13 @@ export class EditFileTool implements Tool {
     try {
       await writeFile(path, newContent, 'utf-8');
     } catch (err) {
-      throw new ToolError(
+      return fail(
+        'edit',
         `Failed to write "${path}": ${err instanceof Error ? err.message : String(err)}`,
-        'edit_file',
       );
     }
 
-    return `Replaced 1 occurrence in ${path}`;
+    return ok(`Replaced 1 occurrence in ${path}`);
   }
 }
 

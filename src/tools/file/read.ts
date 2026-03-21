@@ -1,11 +1,11 @@
 import { readFile } from 'fs/promises';
-import { Tool } from '../index.ts';
-import type { ToolDefinitionSchema } from '../../shared/types.ts';
-import { ToolError } from '../../shared/errors.ts';
+import type { Tool, ToolExecutionContext } from '../index.ts';
+import type { ToolDefinitionSchema, ToolResult } from '../../shared/types.ts';
+import { fail, ok } from '../result.ts';
 
 export class ReadFileTool implements Tool {
   readonly definition: ToolDefinitionSchema = {
-    name: 'read_file',
+    name: 'read',
     description: 'Read the contents of a file. Optionally read only a range of lines.',
     inputSchema: {
       type: 'object',
@@ -18,19 +18,22 @@ export class ReadFileTool implements Tool {
     },
   };
 
-  async execute(input: Record<string, unknown>): Promise<string> {
+  async execute(
+    input: Record<string, unknown>,
+    _context: ToolExecutionContext,
+  ): Promise<ToolResult> {
     const path = input['path'];
     if (typeof path !== 'string' || !path) {
-      throw new ToolError('path must be a non-empty string', 'read_file');
+      return fail('read', 'path must be a non-empty string');
     }
 
     let content: string;
     try {
       content = await readFile(path, 'utf-8');
     } catch (err) {
-      throw new ToolError(
+      return fail(
+        'read',
         `Failed to read "${path}": ${err instanceof Error ? err.message : String(err)}`,
-        'read_file',
       );
     }
 
@@ -41,9 +44,9 @@ export class ReadFileTool implements Tool {
       const lines = content.split('\n');
       const start = typeof startLine === 'number' ? Math.max(1, startLine) - 1 : 0;
       const end = typeof endLine === 'number' ? Math.min(endLine, lines.length) : lines.length;
-      return lines.slice(start, end).join('\n');
+      return ok(lines.slice(start, end).join('\n'));
     }
 
-    return content;
+    return ok(content);
   }
 }

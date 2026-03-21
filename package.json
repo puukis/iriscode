@@ -6,7 +6,8 @@
     "iriscode": "./src/cli/index.tsx"
   },
   "scripts": {
-    "dev": "bun run src/cli/index.ts",
+    "dev": "bun run src/cli/index.tsx",
+    "test": "bun test",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
