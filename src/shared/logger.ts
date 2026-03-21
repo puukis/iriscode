@@ -1,10 +1,11 @@
-export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'silent';
 
 const LOG_LEVELS: Record<LogLevel, number> = {
   debug: 0,
   info: 1,
   warn: 2,
   error: 3,
+  silent: 4,
 };
 
 let currentLevel: LogLevel = (process.env.LOG_LEVEL as LogLevel) ?? 'warn';
