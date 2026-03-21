@@ -10,6 +10,9 @@ import { ToolError } from '../shared/errors.ts';
 import { bus } from '../shared/events.ts';
 import { logger } from '../shared/logger.ts';
 import type { LoadedSkill, ToolExecutionContext, ToolRegistry } from '../tools/index.ts';
+import type { Orchestrator } from './orchestrator.ts';
+import type { GraphTracker } from '../graph/tracker.ts';
+import { Planner } from './planner.ts';
 
 export type ToolPermissionChoice = 'allow-once' | 'allow-always' | 'deny-once' | 'deny-always';
 
@@ -28,6 +31,12 @@ export interface AgentLoopOptions {
   loadedSkills?: LoadedSkill[];
   subagentDepth?: number;
   sessionId?: string;
+  orchestrator?: Orchestrator;
+  tracker?: GraphTracker;
+  agentId?: string;
+  parentAgentId?: string | null;
+  depth?: number;
+  description?: string;
   onText?: (text: string) => void;
   onInfo?: (text: string) => void;
   onPermissionPrompt?: (
@@ -64,6 +73,12 @@ export async function runAgentLoop(
     loadedSkills = [],
     subagentDepth = 0,
     sessionId = globalThis.crypto?.randomUUID?.() ?? `session-${Date.now()}`,
+    orchestrator,
+    tracker,
+    agentId = 'root',
+    parentAgentId = null,
+    depth = subagentDepth,
+    description = getLastUserMessageText(history) ?? 'root agent',
     onText,
     onInfo,
     onPermissionPrompt,
@@ -76,6 +91,7 @@ export async function runAgentLoop(
   const plannedToolCalls: Array<{ name: string; input: Record<string, unknown> }> = [];
 
   bus.emit('session:start', { model: `${adapter.provider}/${adapter.modelId}` });
+  tracker?.agentStarted(agentId, parentAgentId, description, `${adapter.provider}/${adapter.modelId}`, depth);
 
   try {
     while (iterations < maxIterations) {
@@ -175,11 +191,15 @@ export async function runAgentLoop(
                 tools,
                 loadedSkills,
                 subagentDepth,
+                depth,
+                agentId,
                 systemPrompt,
                 askUser,
                 runSubagent,
                 costTracker,
                 plannedToolCalls,
+                orchestrator,
+                tracker,
               ));
             }
           } else {
@@ -194,11 +214,15 @@ export async function runAgentLoop(
               tools,
               loadedSkills,
               subagentDepth,
+              depth,
+              agentId,
               systemPrompt,
               askUser,
               runSubagent,
               costTracker,
               plannedToolCalls,
+              orchestrator,
+              tracker,
             ));
           }
 
@@ -231,42 +255,47 @@ export async function runAgentLoop(
     if (iterations >= maxIterations) {
       logger.warn(`Agent loop hit maxIterations (${maxIterations})`);
     }
+  } catch (error) {
+    tracker?.agentFailed(agentId, error instanceof Error ? error.message : String(error));
+    throw error;
   } finally {
     bus.emit('session:end', { totalInputTokens, totalOutputTokens });
   }
 
   if (permissions.getMode() === 'plan' && plannedToolCalls.length > 0) {
-    const summary = formatPlanSummary(plannedToolCalls);
-    onInfo?.(summary);
+    const planner = new Planner({ askUser, onInfo });
+    const decision = await planner.reviewAndDecide(plannedToolCalls);
+    if (decision === 'run') {
+      onInfo?.('Plan approved. Switching to default mode and executing the last user request.');
+      permissions.setMode('default');
 
-    if (askUser) {
-      const answer = await askUser('Switch to default mode and execute this plan? (y/n)');
-      if (isAffirmative(answer)) {
-        onInfo?.('Plan approved. Switching to default mode and executing the last user request.');
-        permissions.setMode('default');
+      const lastUserMessage = getLastUserMessageText(history);
+      if (lastUserMessage) {
+        const rerunHistory: Message[] = [{ role: 'user', content: lastUserMessage }];
+        const rerunResult = await runAgentLoop(rerunHistory, {
+          ...options,
+          permissions,
+          sessionId,
+          agentId,
+          parentAgentId,
+          depth,
+          description,
+        });
 
-        const lastUserMessage = getLastUserMessageText(history);
-        if (lastUserMessage) {
-          const rerunHistory: Message[] = [{ role: 'user', content: lastUserMessage }];
-          const rerunResult = await runAgentLoop(rerunHistory, {
-            ...options,
-            permissions,
-            sessionId,
-          });
-
-          history.splice(0, history.length, ...rerunHistory);
-          return {
-            finalText: rerunResult.finalText,
-            totalInputTokens: totalInputTokens + rerunResult.totalInputTokens,
-            totalOutputTokens: totalOutputTokens + rerunResult.totalOutputTokens,
-            iterations: iterations + rerunResult.iterations,
-            plannedToolCalls,
-          };
-        }
+        history.splice(0, history.length, ...rerunHistory);
+        tracker?.agentFinished(agentId, rerunResult.finalText);
+        return {
+          finalText: rerunResult.finalText,
+          totalInputTokens: totalInputTokens + rerunResult.totalInputTokens,
+          totalOutputTokens: totalOutputTokens + rerunResult.totalOutputTokens,
+          iterations: iterations + rerunResult.iterations,
+          plannedToolCalls,
+        };
       }
     }
   }
 
+  tracker?.agentFinished(agentId, finalText);
   return { finalText, totalInputTokens, totalOutputTokens, iterations, plannedToolCalls };
 }
 
@@ -281,11 +310,15 @@ async function executeToolOrDryRun(
   tools: ToolRegistry,
   loadedSkills: LoadedSkill[],
   subagentDepth: number,
+  depth: number,
+  agentId: string,
   systemPrompt: string | undefined,
   askUser: AgentLoopOptions['askUser'],
   runSubagent: AgentLoopOptions['runSubagent'],
   costTracker: AgentLoopOptions['costTracker'],
   plannedToolCalls: AgentLoopResult['plannedToolCalls'],
+  orchestrator: AgentLoopOptions['orchestrator'],
+  tracker: AgentLoopOptions['tracker'],
 ): Promise<{ resultContent: string; isError: boolean }> {
   if (permissions.getMode() === 'plan' && !canExecuteInPlanMode(toolCall.name)) {
     plannedToolCalls.push({ name: toolCall.name, input: toolCall.input });
@@ -310,6 +343,10 @@ async function executeToolOrDryRun(
     permissions,
     loadedSkills,
     subagentDepth,
+    depth,
+    agentId,
+    orchestrator,
+    tracker,
     baseSystemPrompt: systemPrompt,
     askUser,
     runSubagent,
@@ -377,10 +414,6 @@ function formatPlanSummary(plannedToolCalls: AgentLoopResult['plannedToolCalls']
   });
 
   return lines.join('\n');
-}
-
-function isAffirmative(value: string): boolean {
-  return /^(y|yes)$/i.test(value.trim());
 }
 
 function getLastUserMessageText(history: Message[]): string | undefined {

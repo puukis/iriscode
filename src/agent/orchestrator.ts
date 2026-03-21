@@ -1,5 +1,7 @@
+import { randomUUID } from 'crypto';
 import { runAgentLoop, type AgentLoopOptions } from './loop.ts';
 import { buildDefaultSystemPrompt } from './system-prompt.ts';
+import { SubagentContext } from './subagent.ts';
 import { createDefaultRegistry, type LoadedSkill } from '../tools/index.ts';
 import { bus } from '../shared/events.ts';
 import { ToolError } from '../shared/errors.ts';
@@ -7,6 +9,9 @@ import { parseModelString, type ModelRegistry } from '../models/registry.ts';
 import { PermissionEngine } from '../permissions/engine.ts';
 import type { PermissionMode } from '../permissions/types.ts';
 import type { CostTracker } from '../cost/tracker.ts';
+import type { ResolvedConfig } from '../config/schema.ts';
+import type { GraphTracker } from '../graph/tracker.ts';
+import type { AgentNode } from '../graph/model.ts';
 
 export interface RunSubagentTaskOptions {
   currentModel: string;
@@ -23,6 +28,162 @@ export interface RunSubagentTaskOptions {
   sessionId?: string;
   onInfo?: AgentLoopOptions['onInfo'];
   onPermissionPrompt?: AgentLoopOptions['onPermissionPrompt'];
+}
+
+export interface SpawnOptions {
+  description: string;
+  model?: string;
+  parentId: string | null;
+  depth: number;
+}
+
+interface OrchestratorRuntimeOptions {
+  cwd?: string;
+  currentModel?: string;
+  costTracker?: CostTracker;
+  sessionId?: string;
+  askUser?: (question: string) => Promise<string>;
+  loadedSkills?: LoadedSkill[];
+  onInfo?: AgentLoopOptions['onInfo'];
+  onPermissionPrompt?: AgentLoopOptions['onPermissionPrompt'];
+}
+
+export class Orchestrator {
+  private config: ResolvedConfig;
+  private tracker: GraphTracker;
+  private permissionEngine: PermissionEngine;
+  private cwd: string;
+  private currentModel: string;
+  private costTracker?: CostTracker;
+  private sessionId?: string;
+  private askUser?: OrchestratorRuntimeOptions['askUser'];
+  private loadedSkills: LoadedSkill[];
+  private onInfo?: OrchestratorRuntimeOptions['onInfo'];
+  private onPermissionPrompt?: OrchestratorRuntimeOptions['onPermissionPrompt'];
+  private readonly activeAgents = new Map<string, { id: string; startedAt: number }>();
+
+  constructor(
+    config: ResolvedConfig,
+    tracker: GraphTracker,
+    permissionEngine: PermissionEngine,
+    options: OrchestratorRuntimeOptions = {},
+  ) {
+    this.config = config;
+    this.tracker = tracker;
+    this.permissionEngine = permissionEngine;
+    this.cwd = options.cwd ?? process.cwd();
+    this.currentModel = normalizeModelKey(options.currentModel ?? config.model);
+    this.costTracker = options.costTracker;
+    this.sessionId = options.sessionId;
+    this.askUser = options.askUser;
+    this.loadedSkills = [...(options.loadedSkills ?? [])];
+    this.onInfo = options.onInfo;
+    this.onPermissionPrompt = options.onPermissionPrompt;
+  }
+
+  updateConfig(config: ResolvedConfig): void {
+    this.config = config;
+  }
+
+  updateTracker(tracker: GraphTracker): void {
+    this.tracker = tracker;
+  }
+
+  updatePermissionEngine(permissionEngine: PermissionEngine): void {
+    this.permissionEngine = permissionEngine;
+  }
+
+  updateRuntime(options: Partial<OrchestratorRuntimeOptions>): void {
+    if (options.cwd !== undefined) {
+      this.cwd = options.cwd;
+    }
+    if (options.currentModel !== undefined) {
+      this.currentModel = normalizeModelKey(options.currentModel);
+    }
+    if (options.costTracker !== undefined) {
+      this.costTracker = options.costTracker;
+    }
+    if (options.sessionId !== undefined) {
+      this.sessionId = options.sessionId;
+    }
+    if (options.askUser !== undefined) {
+      this.askUser = options.askUser;
+    }
+    if (options.loadedSkills !== undefined) {
+      this.loadedSkills = [...options.loadedSkills];
+    }
+    if (options.onInfo !== undefined) {
+      this.onInfo = options.onInfo;
+    }
+    if (options.onPermissionPrompt !== undefined) {
+      this.onPermissionPrompt = options.onPermissionPrompt;
+    }
+  }
+
+  async spawnSubagent(options: SpawnOptions): Promise<string> {
+    if (options.depth >= 5) {
+      bus.emit('agent:depth-exceeded', {
+        agentId: options.parentId ?? 'root',
+        depth: options.depth,
+      });
+      throw new ToolError(
+        'Maximum subagent depth of 5 reached. Cannot spawn further subagents.',
+        'task',
+      );
+    }
+
+    const model = normalizeModelKey(options.model ?? this.currentModel ?? this.config.model);
+    const agentId = `subagent-${randomUUID().replace(/-/g, '').slice(0, 8)}`;
+    const parentId = options.parentId ?? 'root';
+
+    this.tracker.taskDelegated(parentId, agentId, options.description);
+    this.activeAgents.set(agentId, { id: agentId, startedAt: Date.now() });
+
+    const subagent = new SubagentContext({
+      id: agentId,
+      parentId,
+      description: options.description,
+      model,
+      depth: options.depth,
+      config: this.config,
+      tracker: this.tracker,
+      permissionEngine: this.permissionEngine,
+      orchestrator: this,
+      cwd: this.cwd,
+      loadedSkills: this.loadedSkills,
+      askUser: this.askUser,
+      onInfo: this.onInfo,
+      onPermissionPrompt: this.onPermissionPrompt,
+      parentCostTracker: this.costTracker,
+    });
+
+    try {
+      const result = await subagent.run(options.description);
+      this.tracker.taskResolved(parentId, agentId, result);
+      return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.tracker.taskResolved(parentId, agentId, `Error: ${message}`);
+      throw error;
+    } finally {
+      this.activeAgents.delete(agentId);
+    }
+  }
+
+  getActiveAgents(): AgentNode[] {
+    const snapshot = this.tracker.getSnapshot();
+    return snapshot.nodes
+      .filter((node) => node.status === 'running')
+      .map((node) => ({
+        ...node,
+        startedAt: new Date(node.startedAt),
+        finishedAt: node.finishedAt ? new Date(node.finishedAt) : undefined,
+      }));
+  }
+
+  getTotalCost(): number {
+    return this.costTracker?.total().costUsd ?? 0;
+  }
 }
 
 export async function runSubagentTask(
@@ -84,6 +245,10 @@ export async function runSubagentTask(
         ),
       onInfo: options.onInfo,
       onPermissionPrompt: options.onPermissionPrompt,
+      agentId: `compat-${nextDepth}`,
+      parentAgentId: nextDepth > 1 ? `compat-${nextDepth - 1}` : 'root',
+      depth: nextDepth,
+      description,
     });
 
     const { provider, modelId } = parseModelString(modelKey);

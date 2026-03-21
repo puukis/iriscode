@@ -17,7 +17,7 @@ export class TodoWriteTool implements Tool {
   readonly definition: ToolDefinitionSchema = {
     name: 'todo-write',
     description:
-      'Persist a structured todo list to .iriscode/todos.md in the project root for project task tracking. Do not use this for ordinary list-writing in chat.',
+      'Persist a structured todo list to .iris/todos.md in the project root for project task tracking. Do not use this for ordinary list-writing in chat.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -57,12 +57,12 @@ export class TodoWriteTool implements Tool {
       todos.push(parsed.value);
     }
 
-    const iriscodeDir = join(context.cwd, '.iriscode');
-    const outputPath = join(iriscodeDir, 'todos.md');
+    const irisDir = join(context.cwd, '.iris');
+    const outputPath = join(irisDir, 'todos.md');
     const content = renderTodosMarkdown(todos);
 
     try {
-      await mkdir(iriscodeDir, { recursive: true });
+      await mkdir(irisDir, { recursive: true });
       await writeFile(outputPath, content, 'utf-8');
     } catch (err) {
       return fail(

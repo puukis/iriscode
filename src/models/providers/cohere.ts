@@ -35,13 +35,15 @@ export class CohereAdapter extends BaseAdapter {
   readonly provider = 'cohere';
   readonly modelId: string;
   private apiKey: string;
+  private baseUrl: string;
 
-  constructor(modelId: string, apiKey?: string) {
+  constructor(modelId: string, apiKey?: string, baseUrl?: string) {
     super();
     const key = apiKey ?? process.env.COHERE_API_KEY;
     if (!key) throw new ProviderError('API key required. Set COHERE_API_KEY.', 'cohere');
     this.modelId = modelId;
     this.apiKey = key;
+    this.baseUrl = baseUrl ?? process.env.COHERE_BASE_URL ?? 'https://api.cohere.com/v2';
   }
 
   async *stream(params: StreamParams): AsyncGenerator<StreamEvent> {
@@ -69,7 +71,7 @@ export class CohereAdapter extends BaseAdapter {
 
     let response: Response;
     try {
-      response = await fetch('https://api.cohere.com/v2/chat', {
+      response = await fetch(`${this.baseUrl}/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

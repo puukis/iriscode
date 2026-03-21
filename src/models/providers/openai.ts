@@ -7,8 +7,9 @@ export class OpenAIAdapter extends BaseAdapter {
   readonly provider = 'openai';
   readonly modelId: string;
   private apiKey: string;
+  private baseUrl: string;
 
-  constructor(modelId: string, apiKey?: string) {
+  constructor(modelId: string, apiKey?: string, baseUrl?: string) {
     super();
     const key = apiKey ?? process.env.OPENAI_API_KEY;
     if (!key) {
@@ -19,11 +20,12 @@ export class OpenAIAdapter extends BaseAdapter {
     }
     this.modelId = modelId;
     this.apiKey = key;
+    this.baseUrl = baseUrl ?? process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1';
   }
 
   async *stream(params: StreamParams): AsyncGenerator<StreamEvent> {
     yield* streamOpenAICompat(
-      { baseUrl: 'https://api.openai.com/v1', apiKey: this.apiKey, modelId: this.modelId, provider: 'openai' },
+      { baseUrl: this.baseUrl, apiKey: this.apiKey, modelId: this.modelId, provider: 'openai' },
       params,
     );
   }

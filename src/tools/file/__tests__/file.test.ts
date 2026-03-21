@@ -13,6 +13,13 @@ import {
 } from '../../../shared/test-helpers.ts';
 
 describe('file tools', () => {
+  test('write tool description directs assistant-managed state into .iris', () => {
+    const tool = new WriteFileTool();
+
+    expect(tool.definition.description).toContain('assistant-managed project state');
+    expect(tool.definition.description).toContain('.iris/');
+  });
+
   test('write, read, and edit operate on files', async () => {
     const cwd = makeTempDir('iriscode-file-tools-');
     const path = join(cwd, 'notes.txt');

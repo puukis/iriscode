@@ -1,6 +1,6 @@
-import { buildDefaultSystemPrompt } from '../../agent/system-prompt.ts';
+import { appendContextText, buildDefaultSystemPrompt } from '../../agent/system-prompt.ts';
 import { runAgentLoop } from '../../agent/loop.ts';
-import { runSubagentTask } from '../../agent/orchestrator.ts';
+import { Orchestrator } from '../../agent/orchestrator.ts';
 import { loadConfig } from '../../config/loader.ts';
 import { costTracker } from '../../cost/tracker.ts';
 import { createDefaultRegistry as createModelRegistry, parseModelString } from '../../models/registry.ts';
@@ -8,6 +8,7 @@ import { PermissionEngine } from '../../permissions/engine.ts';
 import type { PermissionMode } from '../../permissions/types.ts';
 import { bus } from '../../shared/events.ts';
 import type { Message } from '../../shared/types.ts';
+import { GraphTracker } from '../../graph/tracker.ts';
 import {
   createDefaultRegistry as createToolRegistry,
   type LoadedSkill,
@@ -25,26 +26,54 @@ export async function runRunCommand(args: string[], options: RunCommandOptions =
     throw new Error('Usage: iriscode run "prompt" [--model provider/model] [--mode default|acceptEdits|plan] [--json] [--no-tools]');
   }
 
-  const config = loadConfig();
-  const modelKey = normalizeModelKey(options.modelOverride ?? config.defaultModel);
-  const permissionMode = options.modeOverride ?? parsed.mode ?? config.mode ?? 'default';
+  const cwd = process.cwd();
+  const config = await loadConfig(cwd);
+  const modelKey = normalizeModelKey(options.modelOverride ?? config.model);
+  const permissionMode = options.modeOverride ?? parsed.mode ?? config.permissions.mode;
 
   costTracker.reset();
 
-  const modelRegistry = await createModelRegistry();
+  const modelRegistry = await createModelRegistry(config);
   if (!modelRegistry.has(modelKey)) {
     throw new Error(`Unknown or unavailable model "${modelKey}"`);
   }
 
   const adapter = modelRegistry.get(modelKey);
-  const tools = parsed.noTools ? new ToolRegistry() : createToolRegistry({ currentModel: modelKey });
-  const permissions = new PermissionEngine(permissionMode, process.cwd());
+  const permissions = new PermissionEngine(permissionMode, cwd);
   const history: Message[] = [{ role: 'user', content: parsed.prompt }];
   const loadedSkills: LoadedSkill[] = [];
-  const systemPrompt = buildDefaultSystemPrompt(
-    !parsed.noTools,
-    tools.getDefinitions().map((tool) => tool.name),
+  const graphTracker = new GraphTracker(parsed.prompt, modelKey);
+  const orchestrator = new Orchestrator(config, graphTracker, permissions, {
+    cwd,
+    currentModel: modelKey,
+    costTracker,
+    loadedSkills,
+  });
+  const tools = parsed.noTools
+    ? new ToolRegistry()
+    : createToolRegistry({
+        currentModel: modelKey,
+        orchestrator,
+        tracker: graphTracker,
+        agentId: 'root',
+        depth: 0,
+      });
+  const systemPrompt = appendContextText(
+    buildDefaultSystemPrompt(
+      !parsed.noTools,
+      tools.getDefinitions().map((tool) => tool.name),
+    ),
+    config.context_text,
   );
+  orchestrator.updateRuntime({
+    onInfo: (text) => writeAuxiliaryOutput(text, parsed.json),
+    onPermissionPrompt: async (request) => {
+      if (parsed.json) {
+        writeJsonLine({ type: 'permission_prompt', toolName: request.toolName, input: request.input });
+      }
+      return 'deny-once';
+    },
+  });
 
   const offFns = parsed.json ? attachJsonlEventStream() : [];
 
@@ -57,26 +86,16 @@ export async function runRunCommand(args: string[], options: RunCommandOptions =
       modelRegistry,
       systemPrompt,
       maxIterations: 10,
-      cwd: process.cwd(),
+      cwd,
       costTracker,
       loadedSkills,
       subagentDepth: 0,
-      runSubagent: parsed.noTools
-        ? undefined
-        : (description, model) =>
-            runSubagentTask(
-              description,
-              {
-                currentModel: modelKey,
-                modelRegistry,
-                permissions,
-                cwd: process.cwd(),
-                costTracker,
-                loadedSkills,
-                onInfo: (text) => writeAuxiliaryOutput(text, parsed.json),
-              },
-              model,
-            ),
+      orchestrator,
+      tracker: graphTracker,
+      agentId: 'root',
+      parentAgentId: null,
+      depth: 0,
+      description: parsed.prompt,
       onText: (text) => {
         streamedOutput += text;
         if (parsed.json) {

@@ -7,7 +7,8 @@ import { fail, ok } from '../result.ts';
 export class WriteFileTool implements Tool {
   readonly definition: ToolDefinitionSchema = {
     name: 'write',
-    description: 'Write content to a file, creating parent directories if needed.',
+    description:
+      'Write content to a file, creating parent directories if needed. For assistant-managed project state, notes, or saved preferences, prefer descriptive paths under .iris/ instead of inventing dotfiles in the project root.',
     inputSchema: {
       type: 'object',
       properties: {

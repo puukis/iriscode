@@ -16,7 +16,7 @@ export class AnthropicAdapter extends BaseAdapter {
   readonly modelId: string;
   private client: Anthropic;
 
-  constructor(modelId: string, apiKey?: string) {
+  constructor(modelId: string, apiKey?: string, baseUrl?: string) {
     super();
     const resolvedKey = apiKey ?? process.env.ANTHROPIC_API_KEY;
     if (!resolvedKey) {
@@ -26,7 +26,12 @@ export class AnthropicAdapter extends BaseAdapter {
       );
     }
     this.modelId = modelId;
-    this.client = new Anthropic({ apiKey: resolvedKey });
+    this.client = new Anthropic({
+      apiKey: resolvedKey,
+      ...(baseUrl ?? process.env.ANTHROPIC_BASE_URL
+        ? { baseURL: baseUrl ?? process.env.ANTHROPIC_BASE_URL }
+        : {}),
+    });
   }
 
   async *stream(params: StreamParams): AsyncGenerator<StreamEvent> {

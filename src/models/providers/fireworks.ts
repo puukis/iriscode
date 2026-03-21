@@ -7,18 +7,20 @@ export class FireworksAdapter extends BaseAdapter {
   readonly provider = 'fireworks';
   readonly modelId: string;
   private apiKey: string;
+  private baseUrl: string;
 
-  constructor(modelId: string, apiKey?: string) {
+  constructor(modelId: string, apiKey?: string, baseUrl?: string) {
     super();
     const key = apiKey ?? process.env.FIREWORKS_API_KEY;
     if (!key) throw new ProviderError('API key required. Set FIREWORKS_API_KEY.', 'fireworks');
     this.modelId = modelId;
     this.apiKey = key;
+    this.baseUrl = baseUrl ?? process.env.FIREWORKS_BASE_URL ?? 'https://api.fireworks.ai/inference/v1';
   }
 
   async *stream(params: StreamParams): AsyncGenerator<StreamEvent> {
     yield* streamOpenAICompat(
-      { baseUrl: 'https://api.fireworks.ai/inference/v1', apiKey: this.apiKey, modelId: this.modelId, provider: 'fireworks' },
+      { baseUrl: this.baseUrl, apiKey: this.apiKey, modelId: this.modelId, provider: 'fireworks' },
       params,
     );
   }

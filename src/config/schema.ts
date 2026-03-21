@@ -1,103 +1,177 @@
-import {
-  DEFAULT_PERMISSION_MODE,
-  normalizePermissionMode,
-} from '../permissions/modes.ts';
+import { z } from 'zod';
 import type { PermissionMode } from '../permissions/types.ts';
 
-export interface IrisConfig {
-  anthropicApiKey?: string;
-  openaiApiKey?: string;
-  googleApiKey?: string;
-  groqApiKey?: string;
-  mistralApiKey?: string;
-  deepseekApiKey?: string;
-  xaiApiKey?: string;
-  perplexityApiKey?: string;
-  togetherApiKey?: string;
-  fireworksApiKey?: string;
-  cohereApiKey?: string;
-  openrouterApiKey?: string;
-  ollamaBaseUrl?: string;
-  defaultModel: string;
-  logLevel: string;
-  mode?: PermissionMode;
-  allowed_tools?: string[];
-  disallowed_tools?: string[];
-}
+export const PROVIDER_NAMES = [
+  'anthropic',
+  'openai',
+  'google',
+  'groq',
+  'mistral',
+  'deepseek',
+  'xai',
+  'perplexity',
+  'together',
+  'fireworks',
+  'cohere',
+  'openrouter',
+  'ollama',
+] as const;
 
-export const DEFAULT_CONFIG: IrisConfig = {
-  defaultModel: 'anthropic/claude-sonnet-4-6',
-  logLevel: 'warn',
-  mode: DEFAULT_PERMISSION_MODE,
-};
+export type ProviderName = typeof PROVIDER_NAMES[number];
 
-export function parseConfigObject(input: Record<string, unknown>): Partial<IrisConfig> {
-  return compactObject<IrisConfig>({
-    anthropicApiKey: pickString(input, ['anthropicApiKey', 'anthropic_api_key']),
-    openaiApiKey: pickString(input, ['openaiApiKey', 'openai_api_key']),
-    googleApiKey: pickString(input, ['googleApiKey', 'google_api_key']),
-    groqApiKey: pickString(input, ['groqApiKey', 'groq_api_key']),
-    mistralApiKey: pickString(input, ['mistralApiKey', 'mistral_api_key']),
-    deepseekApiKey: pickString(input, ['deepseekApiKey', 'deepseek_api_key']),
-    xaiApiKey: pickString(input, ['xaiApiKey', 'xai_api_key']),
-    perplexityApiKey: pickString(input, ['perplexityApiKey', 'perplexity_api_key']),
-    togetherApiKey: pickString(input, ['togetherApiKey', 'together_api_key']),
-    fireworksApiKey: pickString(input, ['fireworksApiKey', 'fireworks_api_key']),
-    cohereApiKey: pickString(input, ['cohereApiKey', 'cohere_api_key']),
-    openrouterApiKey: pickString(input, ['openrouterApiKey', 'openrouter_api_key']),
-    ollamaBaseUrl: pickString(input, ['ollamaBaseUrl', 'ollama_base_url']),
-    defaultModel: pickString(input, ['defaultModel', 'default_model']),
-    logLevel: pickString(input, ['logLevel', 'log_level']),
-    mode: normalizePermissionMode(
-      pickFirst(input, ['mode', 'permission_mode']),
-    ),
-    allowed_tools: pickStringArray(input, ['allowed_tools', 'allowedTools']),
-    disallowed_tools: pickStringArray(input, ['disallowed_tools', 'disallowedTools']),
-  });
-}
+const PermissionModeSchema = z.enum(['default', 'acceptEdits', 'plan']);
 
-function pickFirst(input: Record<string, unknown>, keys: string[]): unknown {
-  for (const key of keys) {
-    if (key in input) {
-      return input[key];
-    }
-  }
+export const defaults = {
+  default_model: 'anthropic/claude-sonnet-4-6',
+  model: 'anthropic/claude-sonnet-4-6',
+  log_level: 'warn',
+  permissions: {
+    mode: 'default' as PermissionMode,
+    allowed_tools: [] as string[],
+    disallowed_tools: [] as string[],
+  },
+  memory: {
+    max_tokens: 10000,
+    max_lines: 200,
+    warn_at: 8000,
+  },
+  mcp_servers: [] as Array<{
+    url: string;
+    name: string;
+    enabled: boolean;
+  }>,
+  providers: {
+    anthropic: { apiKey: null, baseUrl: null },
+    openai: { apiKey: null, baseUrl: null },
+    google: { apiKey: null, baseUrl: null },
+    groq: { apiKey: null, baseUrl: null },
+    mistral: { apiKey: null, baseUrl: null },
+    deepseek: { apiKey: null, baseUrl: null },
+    xai: { apiKey: null, baseUrl: null },
+    perplexity: { apiKey: null, baseUrl: null },
+    together: { apiKey: null, baseUrl: null },
+    fireworks: { apiKey: null, baseUrl: null },
+    cohere: { apiKey: null, baseUrl: null },
+    openrouter: { apiKey: null, baseUrl: null },
+    ollama: { apiKey: null, baseUrl: 'http://localhost:11434' },
+  },
+  context_text: '',
+} as const;
 
-  return undefined;
-}
+export const ProviderConfigSchema = z.object({
+  apiKey: z.string().min(1).optional(),
+  baseUrl: z.string().min(1).optional(),
+}).strict();
 
-function pickString(input: Record<string, unknown>, keys: string[]): string | undefined {
-  const value = pickFirst(input, keys);
-  if (typeof value !== 'string') {
-    return undefined;
-  }
+export const ProvidersSchema = z.object({
+  anthropic: ProviderConfigSchema.optional(),
+  openai: ProviderConfigSchema.optional(),
+  google: ProviderConfigSchema.optional(),
+  groq: ProviderConfigSchema.optional(),
+  mistral: ProviderConfigSchema.optional(),
+  deepseek: ProviderConfigSchema.optional(),
+  xai: ProviderConfigSchema.optional(),
+  perplexity: ProviderConfigSchema.optional(),
+  together: ProviderConfigSchema.optional(),
+  fireworks: ProviderConfigSchema.optional(),
+  cohere: ProviderConfigSchema.optional(),
+  openrouter: ProviderConfigSchema.optional(),
+  ollama: ProviderConfigSchema.optional(),
+}).strict();
 
-  const trimmed = value.trim();
-  return trimmed ? trimmed : undefined;
-}
+export const PermissionsSchema = z.object({
+  mode: PermissionModeSchema.optional(),
+  allowed_tools: z.array(z.string().min(1)).optional(),
+  disallowed_tools: z.array(z.string().min(1)).optional(),
+}).strict();
 
-function pickStringArray(input: Record<string, unknown>, keys: string[]): string[] | undefined {
-  const value = pickFirst(input, keys);
-  if (!Array.isArray(value)) {
-    return undefined;
-  }
+export const MemorySchema = z.object({
+  max_tokens: z.number().int().positive().default(defaults.memory.max_tokens),
+  max_lines: z.number().int().positive().default(defaults.memory.max_lines),
+  warn_at: z.number().int().positive().default(defaults.memory.warn_at),
+}).partial().strict();
 
-  const normalized = value
-    .filter((item): item is string => typeof item === 'string')
-    .map((item) => item.trim())
-    .filter(Boolean);
+export const McpServerSchema = z.object({
+  url: z.string().url(),
+  name: z.string().min(1),
+  enabled: z.boolean().optional(),
+}).strict();
 
-  return normalized.length > 0 ? normalized : undefined;
-}
+export const ProjectConfigSchema = z.object({
+  model: z.string().min(1).optional(),
+  providers: ProvidersSchema.optional(),
+  permissions: PermissionsSchema.optional(),
+  memory: MemorySchema.optional(),
+  mcp_servers: z.array(McpServerSchema).optional(),
+  log_level: z.string().min(1).optional(),
+}).strict();
 
-function compactObject<T extends object>(input: Partial<T>): Partial<T> {
-  const result: Partial<T> = {};
+export const GlobalConfigSchema = z.object({
+  default_model: z.string().min(1).optional(),
+  providers: ProvidersSchema.optional(),
+  permissions: PermissionsSchema.optional(),
+  memory: MemorySchema.optional(),
+  mcp_servers: z.array(McpServerSchema).optional(),
+  log_level: z.string().min(1).optional(),
+}).strict();
 
-  for (const [key, value] of Object.entries(input) as Array<[keyof T, T[keyof T] | undefined]>) {
-    if (value !== undefined) {
-      result[key] = value;
-    }
-  }
+const ResolvedProviderConfigSchema = z.object({
+  apiKey: z.string().nullable(),
+  baseUrl: z.string().nullable(),
+}).strict();
 
-  return result;
-}
+const ResolvedProvidersSchema = z.object({
+  anthropic: ResolvedProviderConfigSchema,
+  openai: ResolvedProviderConfigSchema,
+  google: ResolvedProviderConfigSchema,
+  groq: ResolvedProviderConfigSchema,
+  mistral: ResolvedProviderConfigSchema,
+  deepseek: ResolvedProviderConfigSchema,
+  xai: ResolvedProviderConfigSchema,
+  perplexity: ResolvedProviderConfigSchema,
+  together: ResolvedProviderConfigSchema,
+  fireworks: ResolvedProviderConfigSchema,
+  cohere: ResolvedProviderConfigSchema,
+  openrouter: ResolvedProviderConfigSchema,
+  ollama: ResolvedProviderConfigSchema,
+}).strict();
+
+const ResolvedPermissionsSchema = z.object({
+  mode: PermissionModeSchema,
+  allowed_tools: z.array(z.string()),
+  disallowed_tools: z.array(z.string()),
+}).strict();
+
+const ResolvedMemorySchema = z.object({
+  max_tokens: z.number().int().positive(),
+  max_lines: z.number().int().positive(),
+  warn_at: z.number().int().positive(),
+}).strict();
+
+const ResolvedMcpServerSchema = z.object({
+  url: z.string().url(),
+  name: z.string().min(1),
+  enabled: z.boolean(),
+}).strict();
+
+export const ResolvedConfigSchema = z.object({
+  model: z.string().min(1),
+  default_model: z.string().min(1),
+  providers: ResolvedProvidersSchema,
+  permissions: ResolvedPermissionsSchema,
+  memory: ResolvedMemorySchema,
+  mcp_servers: z.array(ResolvedMcpServerSchema),
+  context_text: z.string(),
+  log_level: z.string().min(1),
+}).strict();
+
+export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
+export type ProvidersConfig = z.infer<typeof ProvidersSchema>;
+export type PermissionsConfig = z.infer<typeof PermissionsSchema>;
+export type MemoryConfig = z.infer<typeof MemorySchema>;
+export type McpServerConfig = z.infer<typeof McpServerSchema>;
+export type ProjectConfig = z.infer<typeof ProjectConfigSchema>;
+export type GlobalConfig = z.infer<typeof GlobalConfigSchema>;
+export type ResolvedConfig = z.infer<typeof ResolvedConfigSchema>;
+
+export type IrisConfig = ResolvedConfig;

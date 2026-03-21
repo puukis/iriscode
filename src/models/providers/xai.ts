@@ -7,18 +7,20 @@ export class XAIAdapter extends BaseAdapter {
   readonly provider = 'xai';
   readonly modelId: string;
   private apiKey: string;
+  private baseUrl: string;
 
-  constructor(modelId: string, apiKey?: string) {
+  constructor(modelId: string, apiKey?: string, baseUrl?: string) {
     super();
     const key = apiKey ?? process.env.XAI_API_KEY;
     if (!key) throw new ProviderError('API key required. Set XAI_API_KEY.', 'xai');
     this.modelId = modelId;
     this.apiKey = key;
+    this.baseUrl = baseUrl ?? process.env.XAI_BASE_URL ?? 'https://api.x.ai/v1';
   }
 
   async *stream(params: StreamParams): AsyncGenerator<StreamEvent> {
     yield* streamOpenAICompat(
-      { baseUrl: 'https://api.x.ai/v1', apiKey: this.apiKey, modelId: this.modelId, provider: 'xai' },
+      { baseUrl: this.baseUrl, apiKey: this.apiKey, modelId: this.modelId, provider: 'xai' },
       params,
     );
   }

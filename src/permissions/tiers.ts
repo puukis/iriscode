@@ -1,13 +1,13 @@
-import { loadProjectConfig } from '../config/project.ts';
-import { loadUserConfig } from '../config/user.ts';
+import { loadGlobalConfigSync } from '../config/global.ts';
+import { loadProjectConfigSync } from '../config/project.ts';
 import { DEFAULT_ALLOWED_TOOL_PATTERNS } from './modes.ts';
 import type { PermissionRule, PermissionTier } from './types.ts';
 
 export function resolveRules(cwd: string): PermissionRule[] {
   const rules: PermissionRule[] = [];
 
-  appendRules(rules, loadProjectConfig(cwd), 'project');
-  appendRules(rules, loadUserConfig(), 'user');
+  appendRules(rules, loadProjectConfigSync(cwd).config.permissions, 'project');
+  appendRules(rules, loadGlobalConfigSync().config.permissions, 'user');
   appendRules(
     rules,
     { allowed_tools: [...DEFAULT_ALLOWED_TOOL_PATTERNS] },
@@ -19,9 +19,13 @@ export function resolveRules(cwd: string): PermissionRule[] {
 
 function appendRules(
   target: PermissionRule[],
-  config: { allowed_tools?: string[]; disallowed_tools?: string[] },
+  config: { allowed_tools?: string[]; disallowed_tools?: string[] } | undefined,
   tier: PermissionTier,
 ): void {
+  if (!config) {
+    return;
+  }
+
   for (const pattern of config.disallowed_tools ?? []) {
     target.push({
       pattern,
@@ -44,8 +48,8 @@ function appendRules(
 function describeTierReason(tier: PermissionTier, decision: 'allow' | 'deny'): string {
   if (tier === 'project') {
     return decision === 'allow'
-      ? 'Allowed by project configuration in .iris/settings.local.json'
-      : 'Denied by project configuration in .iris/settings.local.json';
+      ? 'Allowed by project configuration in IRIS.md or .iris/settings.local.json'
+      : 'Denied by project configuration in IRIS.md or .iris/settings.local.json';
   }
 
   if (tier === 'user') {

@@ -119,7 +119,7 @@ describe('cli', () => {
             }) as typeof fetch,
             async () => {
               const output = await captureStdout(() => runRunCommand(['Make a plan', '--mode', 'plan']));
-              expect(output).toContain('[PLAN MODE] Planned tool calls:');
+              expect(output).toContain('[PLAN MODE] Planned steps:');
             },
           );
         });

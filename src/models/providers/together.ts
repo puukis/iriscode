@@ -7,18 +7,20 @@ export class TogetherAdapter extends BaseAdapter {
   readonly provider = 'together';
   readonly modelId: string;
   private apiKey: string;
+  private baseUrl: string;
 
-  constructor(modelId: string, apiKey?: string) {
+  constructor(modelId: string, apiKey?: string, baseUrl?: string) {
     super();
     const key = apiKey ?? process.env.TOGETHER_API_KEY;
     if (!key) throw new ProviderError('API key required. Set TOGETHER_API_KEY.', 'together');
     this.modelId = modelId;
     this.apiKey = key;
+    this.baseUrl = baseUrl ?? process.env.TOGETHER_BASE_URL ?? 'https://api.together.xyz/v1';
   }
 
   async *stream(params: StreamParams): AsyncGenerator<StreamEvent> {
     yield* streamOpenAICompat(
-      { baseUrl: 'https://api.together.xyz/v1', apiKey: this.apiKey, modelId: this.modelId, provider: 'together' },
+      { baseUrl: this.baseUrl, apiKey: this.apiKey, modelId: this.modelId, provider: 'together' },
       params,
     );
   }

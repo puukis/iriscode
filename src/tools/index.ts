@@ -3,6 +3,8 @@ import { parseModelString, type ModelRegistry } from '../models/registry.ts';
 import type { PermissionsEngine } from '../permissions/engine.ts';
 import type { Message, ToolDefinitionSchema, ToolResult } from '../shared/types.ts';
 import type { CostTracker } from '../cost/tracker.ts';
+import type { Orchestrator } from '../agent/orchestrator.ts';
+import type { GraphTracker } from '../graph/tracker.ts';
 import { ReadFileTool } from './file/read.ts';
 import { WriteFileTool } from './file/write.ts';
 import { EditFileTool } from './file/edit.ts';
@@ -36,6 +38,10 @@ export interface ToolExecutionContext {
   permissions: PermissionsEngine;
   loadedSkills: LoadedSkill[];
   subagentDepth: number;
+  depth: number;
+  agentId: string;
+  orchestrator?: Orchestrator;
+  tracker?: GraphTracker;
   baseSystemPrompt?: string;
   askUser?: (question: string) => Promise<string>;
   runSubagent?: (description: string, model?: string) => Promise<string>;
@@ -51,6 +57,11 @@ export type { ToolDefinitionSchema, ToolResult };
 
 export interface DefaultToolRegistryOptions {
   currentModel?: string;
+  allowedTools?: string[];
+  orchestrator?: Orchestrator;
+  tracker?: GraphTracker;
+  agentId?: string;
+  depth?: number;
 }
 
 export class ToolRegistry {
@@ -84,13 +95,23 @@ export class ToolRegistry {
 
 export function createDefaultRegistry(options: DefaultToolRegistryOptions = {}): ToolRegistry {
   const registry = new ToolRegistry();
+  const allowed = options.allowedTools
+    ? new Set(options.allowedTools.map((name) => name.trim().toLowerCase()).filter(Boolean))
+    : null;
 
-  registry.register(new ReadFileTool());
-  registry.register(new WriteFileTool());
-  registry.register(new EditFileTool());
-  registry.register(new BashTool());
-  registry.register(new GlobTool());
-  registry.register(new GrepTool());
+  const register = (tool: Tool) => {
+    if (allowed && !allowed.has(tool.definition.name.toLowerCase())) {
+      return;
+    }
+    registry.register(tool);
+  };
+
+  register(new ReadFileTool());
+  register(new WriteFileTool());
+  register(new EditFileTool());
+  register(new BashTool());
+  register(new GlobTool());
+  register(new GrepTool());
 
   registry.registerAlias('read_file', 'read');
   registry.registerAlias('write_file', 'write');
@@ -98,18 +119,18 @@ export function createDefaultRegistry(options: DefaultToolRegistryOptions = {}):
 
   const { provider } = parseModelString(options.currentModel ?? 'anthropic/claude-sonnet-4-6');
   if (provider !== 'bedrock' && provider !== 'vertex') {
-    registry.register(new WebSearchTool());
+    register(new WebSearchTool());
   }
 
-  registry.register(new WebFetchTool());
-  registry.register(new GitStatusTool());
-  registry.register(new GitDiffTool());
-  registry.register(new GitCommitTool());
-  registry.register(new ToolSearchTool());
-  registry.register(new TaskTool());
-  registry.register(new SkillTool());
-  registry.register(new AskUserTool());
-  registry.register(new TodoWriteTool());
+  register(new WebFetchTool());
+  register(new GitStatusTool());
+  register(new GitDiffTool());
+  register(new GitCommitTool());
+  register(new ToolSearchTool());
+  register(new TaskTool(options.orchestrator));
+  register(new SkillTool());
+  register(new AskUserTool());
+  register(new TodoWriteTool());
 
   return registry;
 }

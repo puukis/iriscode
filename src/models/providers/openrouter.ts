@@ -7,19 +7,21 @@ export class OpenRouterAdapter extends BaseAdapter {
   readonly provider = 'openrouter';
   readonly modelId: string;
   private apiKey: string;
+  private baseUrl: string;
 
-  constructor(modelId: string, apiKey?: string) {
+  constructor(modelId: string, apiKey?: string, baseUrl?: string) {
     super();
     const key = apiKey ?? process.env.OPENROUTER_API_KEY;
     if (!key) throw new ProviderError('API key required. Set OPENROUTER_API_KEY.', 'openrouter');
     this.modelId = modelId;
     this.apiKey = key;
+    this.baseUrl = baseUrl ?? process.env.OPENROUTER_BASE_URL ?? 'https://openrouter.ai/api/v1';
   }
 
   async *stream(params: StreamParams): AsyncGenerator<StreamEvent> {
     yield* streamOpenAICompat(
       {
-        baseUrl: 'https://openrouter.ai/api/v1',
+        baseUrl: this.baseUrl,
         apiKey: this.apiKey,
         modelId: this.modelId,
         provider: 'openrouter',

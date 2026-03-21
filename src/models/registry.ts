@@ -13,6 +13,8 @@ import { FireworksAdapter } from './providers/fireworks.ts';
 import { CohereAdapter } from './providers/cohere.ts';
 import { OpenRouterAdapter } from './providers/openrouter.ts';
 import { ProviderError } from '../shared/errors.ts';
+import type { ResolvedConfig } from '../config/schema.ts';
+import { getConfig } from '../config/loader.ts';
 
 export class ModelRegistry {
   private adapters = new Map<string, BaseAdapter>();
@@ -67,14 +69,18 @@ export function parseModelString(modelString: string): { provider: string; model
   return { provider, modelId };
 }
 
-export async function createDefaultRegistry(): Promise<ModelRegistry> {
+export async function createDefaultRegistry(configOverride?: ResolvedConfig): Promise<ModelRegistry> {
   const registry = new ModelRegistry();
+  const config = configOverride ?? safeGetLoadedConfig();
 
   // ── Anthropic ──────────────────────────────────────────────────────────────
-  if (process.env.ANTHROPIC_API_KEY) {
+  if (config?.providers.anthropic.apiKey ?? process.env.ANTHROPIC_API_KEY) {
     for (const modelId of ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5']) {
       try {
-        registry.register(`anthropic/${modelId}`, new AnthropicAdapter(modelId));
+        registry.register(
+          `anthropic/${modelId}`,
+          new AnthropicAdapter(modelId, config?.providers.anthropic.apiKey ?? undefined, config?.providers.anthropic.baseUrl ?? undefined),
+        );
       } catch (err) {
         if (!(err instanceof ProviderError)) throw err;
       }
@@ -82,10 +88,13 @@ export async function createDefaultRegistry(): Promise<ModelRegistry> {
   }
 
   // ── OpenAI ─────────────────────────────────────────────────────────────────
-  if (process.env.OPENAI_API_KEY) {
+  if (config?.providers.openai.apiKey ?? process.env.OPENAI_API_KEY) {
     for (const modelId of ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'o1', 'o3-mini']) {
       try {
-        registry.register(`openai/${modelId}`, new OpenAIAdapter(modelId));
+        registry.register(
+          `openai/${modelId}`,
+          new OpenAIAdapter(modelId, config?.providers.openai.apiKey ?? undefined, config?.providers.openai.baseUrl ?? undefined),
+        );
       } catch (err) {
         if (!(err instanceof ProviderError)) throw err;
       }
@@ -93,10 +102,13 @@ export async function createDefaultRegistry(): Promise<ModelRegistry> {
   }
 
   // ── Google ─────────────────────────────────────────────────────────────────
-  if (process.env.GOOGLE_API_KEY) {
+  if (config?.providers.google.apiKey ?? process.env.GOOGLE_API_KEY) {
     for (const modelId of ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash']) {
       try {
-        registry.register(`google/${modelId}`, new GoogleAdapter(modelId));
+        registry.register(
+          `google/${modelId}`,
+          new GoogleAdapter(modelId, config?.providers.google.apiKey ?? undefined, config?.providers.google.baseUrl ?? undefined),
+        );
       } catch (err) {
         if (!(err instanceof ProviderError)) throw err;
       }
@@ -104,10 +116,13 @@ export async function createDefaultRegistry(): Promise<ModelRegistry> {
   }
 
   // ── Groq ───────────────────────────────────────────────────────────────────
-  if (process.env.GROQ_API_KEY) {
+  if (config?.providers.groq.apiKey ?? process.env.GROQ_API_KEY) {
     for (const modelId of ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'mixtral-8x7b-32768']) {
       try {
-        registry.register(`groq/${modelId}`, new GroqAdapter(modelId));
+        registry.register(
+          `groq/${modelId}`,
+          new GroqAdapter(modelId, config?.providers.groq.apiKey ?? undefined, config?.providers.groq.baseUrl ?? undefined),
+        );
       } catch (err) {
         if (!(err instanceof ProviderError)) throw err;
       }
@@ -115,10 +130,13 @@ export async function createDefaultRegistry(): Promise<ModelRegistry> {
   }
 
   // ── Mistral ────────────────────────────────────────────────────────────────
-  if (process.env.MISTRAL_API_KEY) {
+  if (config?.providers.mistral.apiKey ?? process.env.MISTRAL_API_KEY) {
     for (const modelId of ['mistral-large-latest', 'mistral-small-latest', 'codestral-latest']) {
       try {
-        registry.register(`mistral/${modelId}`, new MistralAdapter(modelId));
+        registry.register(
+          `mistral/${modelId}`,
+          new MistralAdapter(modelId, config?.providers.mistral.apiKey ?? undefined, config?.providers.mistral.baseUrl ?? undefined),
+        );
       } catch (err) {
         if (!(err instanceof ProviderError)) throw err;
       }
@@ -126,10 +144,13 @@ export async function createDefaultRegistry(): Promise<ModelRegistry> {
   }
 
   // ── DeepSeek ───────────────────────────────────────────────────────────────
-  if (process.env.DEEPSEEK_API_KEY) {
+  if (config?.providers.deepseek.apiKey ?? process.env.DEEPSEEK_API_KEY) {
     for (const modelId of ['deepseek-chat', 'deepseek-reasoner']) {
       try {
-        registry.register(`deepseek/${modelId}`, new DeepSeekAdapter(modelId));
+        registry.register(
+          `deepseek/${modelId}`,
+          new DeepSeekAdapter(modelId, config?.providers.deepseek.apiKey ?? undefined, config?.providers.deepseek.baseUrl ?? undefined),
+        );
       } catch (err) {
         if (!(err instanceof ProviderError)) throw err;
       }
@@ -137,10 +158,13 @@ export async function createDefaultRegistry(): Promise<ModelRegistry> {
   }
 
   // ── xAI ────────────────────────────────────────────────────────────────────
-  if (process.env.XAI_API_KEY) {
+  if (config?.providers.xai.apiKey ?? process.env.XAI_API_KEY) {
     for (const modelId of ['grok-3', 'grok-3-mini', 'grok-2']) {
       try {
-        registry.register(`xai/${modelId}`, new XAIAdapter(modelId));
+        registry.register(
+          `xai/${modelId}`,
+          new XAIAdapter(modelId, config?.providers.xai.apiKey ?? undefined, config?.providers.xai.baseUrl ?? undefined),
+        );
       } catch (err) {
         if (!(err instanceof ProviderError)) throw err;
       }
@@ -148,10 +172,13 @@ export async function createDefaultRegistry(): Promise<ModelRegistry> {
   }
 
   // ── Perplexity ─────────────────────────────────────────────────────────────
-  if (process.env.PERPLEXITY_API_KEY) {
+  if (config?.providers.perplexity.apiKey ?? process.env.PERPLEXITY_API_KEY) {
     for (const modelId of ['sonar-pro', 'sonar', 'sonar-reasoning']) {
       try {
-        registry.register(`perplexity/${modelId}`, new PerplexityAdapter(modelId));
+        registry.register(
+          `perplexity/${modelId}`,
+          new PerplexityAdapter(modelId, config?.providers.perplexity.apiKey ?? undefined, config?.providers.perplexity.baseUrl ?? undefined),
+        );
       } catch (err) {
         if (!(err instanceof ProviderError)) throw err;
       }
@@ -159,13 +186,16 @@ export async function createDefaultRegistry(): Promise<ModelRegistry> {
   }
 
   // ── Together ───────────────────────────────────────────────────────────────
-  if (process.env.TOGETHER_API_KEY) {
+  if (config?.providers.together.apiKey ?? process.env.TOGETHER_API_KEY) {
     for (const modelId of [
       'meta-llama/Llama-3.3-70B-Instruct-Turbo',
       'mistralai/Mixtral-8x7B-Instruct-v0.1',
     ]) {
       try {
-        registry.register(`together/${modelId}`, new TogetherAdapter(modelId));
+        registry.register(
+          `together/${modelId}`,
+          new TogetherAdapter(modelId, config?.providers.together.apiKey ?? undefined, config?.providers.together.baseUrl ?? undefined),
+        );
       } catch (err) {
         if (!(err instanceof ProviderError)) throw err;
       }
@@ -173,13 +203,16 @@ export async function createDefaultRegistry(): Promise<ModelRegistry> {
   }
 
   // ── Fireworks ──────────────────────────────────────────────────────────────
-  if (process.env.FIREWORKS_API_KEY) {
+  if (config?.providers.fireworks.apiKey ?? process.env.FIREWORKS_API_KEY) {
     for (const modelId of [
       'accounts/fireworks/models/llama-v3p3-70b-instruct',
       'accounts/fireworks/models/deepseek-r1',
     ]) {
       try {
-        registry.register(`fireworks/${modelId}`, new FireworksAdapter(modelId));
+        registry.register(
+          `fireworks/${modelId}`,
+          new FireworksAdapter(modelId, config?.providers.fireworks.apiKey ?? undefined, config?.providers.fireworks.baseUrl ?? undefined),
+        );
       } catch (err) {
         if (!(err instanceof ProviderError)) throw err;
       }
@@ -187,10 +220,13 @@ export async function createDefaultRegistry(): Promise<ModelRegistry> {
   }
 
   // ── Cohere ─────────────────────────────────────────────────────────────────
-  if (process.env.COHERE_API_KEY) {
+  if (config?.providers.cohere.apiKey ?? process.env.COHERE_API_KEY) {
     for (const modelId of ['command-r-plus', 'command-r']) {
       try {
-        registry.register(`cohere/${modelId}`, new CohereAdapter(modelId));
+        registry.register(
+          `cohere/${modelId}`,
+          new CohereAdapter(modelId, config?.providers.cohere.apiKey ?? undefined, config?.providers.cohere.baseUrl ?? undefined),
+        );
       } catch (err) {
         if (!(err instanceof ProviderError)) throw err;
       }
@@ -198,20 +234,34 @@ export async function createDefaultRegistry(): Promise<ModelRegistry> {
   }
 
   // ── OpenRouter (dynamic — any model string) ────────────────────────────────
-  if (process.env.OPENROUTER_API_KEY) {
-    registry.registerFactory('openrouter', (modelId) => new OpenRouterAdapter(modelId));
+  if (config?.providers.openrouter.apiKey ?? process.env.OPENROUTER_API_KEY) {
+    registry.registerFactory(
+      'openrouter',
+      (modelId) => new OpenRouterAdapter(modelId, config?.providers.openrouter.apiKey ?? undefined, config?.providers.openrouter.baseUrl ?? undefined),
+    );
   }
 
   // ── Ollama (local, no key needed) ──────────────────────────────────────────
   try {
-    const probe = new OllamaAdapter('__probe__');
+    const probe = new OllamaAdapter('__probe__', config?.providers.ollama.baseUrl ?? undefined);
     const ollamaModels = await probe.fetchModels();
     for (const modelId of ollamaModels) {
-      registry.register(`ollama/${modelId}`, new OllamaAdapter(modelId));
+      registry.register(
+        `ollama/${modelId}`,
+        new OllamaAdapter(modelId, config?.providers.ollama.baseUrl ?? undefined),
+      );
     }
   } catch (err) {
     if (!(err instanceof ProviderError)) throw err;
   }
 
   return registry;
+}
+
+function safeGetLoadedConfig(): ResolvedConfig | undefined {
+  try {
+    return getConfig();
+  } catch {
+    return undefined;
+  }
 }

@@ -1,202 +1,186 @@
 import React, { useMemo, useState } from 'react';
-import { Box, Text, render, useInput } from 'ink';
+import { Box, Text, render } from 'ink';
 import TextInput from 'ink-text-input';
-import { loadConfig } from '../../config/loader.ts';
-import type { IrisConfig } from '../../config/schema.ts';
-import { loadUserConfig, writeUserConfig } from '../../config/user.ts';
-import type { PermissionMode } from '../../permissions/types.ts';
-import { resolveRules } from '../../permissions/tiers.ts';
+import SelectInput from 'ink-select-input';
+import { stringify as stringifyToml } from 'smol-toml';
+import { loadConfig, reloadConfig } from '../../config/loader.ts';
+import {
+  loadGlobalConfig,
+  getGlobalConfigPath,
+  writeGlobalConfig,
+} from '../../config/global.ts';
+import { setApiKey } from '../../config/secrets.ts';
+import type { GlobalConfig, ProviderName, ResolvedConfig } from '../../config/schema.ts';
+import { redactSecrets } from '../../config/utils.ts';
+import { createDefaultRegistry as createModelRegistry } from '../../models/registry.ts';
 
-type Screen = 'menu' | 'view' | 'mode' | 'allowed' | 'blocked' | 'api-select' | 'api-input';
+type MenuValue =
+  | 'view'
+  | 'model'
+  | 'api'
+  | 'allow'
+  | 'block'
+  | 'edit-project'
+  | 'edit-global'
+  | 'exit';
 
-const MENU_OPTIONS = [
-  'View current resolved config',
-  'Set default mode',
-  'Edit allowed tools list',
-  'Edit blocked tools list',
-  'Set/update API keys',
-  'Exit',
+type Screen =
+  | 'menu'
+  | 'view'
+  | 'model'
+  | 'api-list'
+  | 'api-input'
+  | 'allowed'
+  | 'blocked';
+
+const PROVIDERS: ProviderName[] = [
+  'anthropic',
+  'openai',
+  'google',
+  'groq',
+  'mistral',
+  'deepseek',
+  'xai',
+  'perplexity',
+  'together',
+  'fireworks',
+  'cohere',
+  'openrouter',
 ] as const;
 
-const MODE_OPTIONS: PermissionMode[] = ['default', 'acceptEdits', 'plan'];
-const API_KEY_FIELDS: Array<{ key: keyof IrisConfig; label: string }> = [
-  { key: 'anthropicApiKey', label: 'Anthropic API key' },
-  { key: 'openaiApiKey', label: 'OpenAI API key' },
-  { key: 'googleApiKey', label: 'Google API key' },
-  { key: 'groqApiKey', label: 'Groq API key' },
-  { key: 'mistralApiKey', label: 'Mistral API key' },
-  { key: 'deepseekApiKey', label: 'DeepSeek API key' },
-  { key: 'xaiApiKey', label: 'xAI API key' },
-  { key: 'perplexityApiKey', label: 'Perplexity API key' },
-  { key: 'togetherApiKey', label: 'Together API key' },
-  { key: 'fireworksApiKey', label: 'Fireworks API key' },
-  { key: 'cohereApiKey', label: 'Cohere API key' },
-  { key: 'openrouterApiKey', label: 'OpenRouter API key' },
-  { key: 'ollamaBaseUrl', label: 'Ollama base URL' },
-] as const;
+export async function runConfigCommand(
+  cwd: string = process.cwd(),
+  args: string[] = [],
+): Promise<void> {
+  const absoluteCwd = cwd;
 
-export async function runConfigCommand(cwd: string = process.cwd()): Promise<void> {
-  await new Promise<void>((resolve) => {
+  if (args.includes('--show')) {
+    const config = await reloadConfig(absoluteCwd);
+    process.stdout.write(`${formatResolvedConfig(config)}\n`);
+    return;
+  }
+
+  const setIndex = args.indexOf('--set');
+  if (setIndex !== -1 && args[setIndex + 1]) {
+    await setGlobalConfigValue(args[setIndex + 1]);
+    await reloadConfig(absoluteCwd);
+    return;
+  }
+
+  const initialConfig = await reloadConfig(absoluteCwd);
+  const modelRegistry = await createModelRegistry(initialConfig);
+  const availableModels = Array.from(new Set([
+    initialConfig.model,
+    ...modelRegistry.keys(),
+  ])).sort();
+
+  await new Promise<void>((resolvePromise) => {
     let app: ReturnType<typeof render>;
     app = render(
       <ConfigApp
-        cwd={cwd}
+        cwd={absoluteCwd}
+        initialConfig={initialConfig}
+        availableModels={availableModels}
         onExit={() => {
           app.unmount();
-          resolve();
+          resolvePromise();
         }}
       />,
     );
   });
 }
 
-function ConfigApp({ cwd, onExit }: { cwd: string; onExit: () => void }) {
+function ConfigApp({
+  cwd,
+  initialConfig,
+  availableModels,
+  onExit,
+}: {
+  cwd: string;
+  initialConfig: ResolvedConfig;
+  availableModels: string[];
+  onExit: () => void;
+}) {
   const [screen, setScreen] = useState<Screen>('menu');
-  const [menuIndex, setMenuIndex] = useState(0);
-  const [modeIndex, setModeIndex] = useState(() => {
-    const currentMode = loadUserConfig().mode ?? 'default';
-    return Math.max(0, MODE_OPTIONS.indexOf(currentMode));
-  });
-  const [apiIndex, setApiIndex] = useState(0);
-  const [editingValue, setEditingValue] = useState('');
-  const [editingField, setEditingField] = useState<keyof IrisConfig | null>(null);
+  const [resolvedConfig, setResolvedConfig] = useState(initialConfig);
+  const [globalConfig, setGlobalConfig] = useState<GlobalConfig>(() => ({
+    default_model: initialConfig.default_model,
+    permissions: {
+      mode: initialConfig.permissions.mode,
+      allowed_tools: [...initialConfig.permissions.allowed_tools],
+      disallowed_tools: [...initialConfig.permissions.disallowed_tools],
+    },
+    providers: Object.fromEntries(
+      PROVIDERS.map((provider) => [
+        provider,
+        {
+          apiKey: resolvedConfigProviderApiKey(initialConfig, provider),
+          baseUrl: initialConfig.providers[provider].baseUrl ?? undefined,
+        },
+      ]),
+    ),
+    memory: { ...initialConfig.memory },
+    mcp_servers: [...initialConfig.mcp_servers],
+    log_level: initialConfig.log_level,
+  }));
   const [status, setStatus] = useState<string | null>(null);
-  const [userConfig, setUserConfig] = useState<Partial<IrisConfig>>(() => loadUserConfig());
+  const [editingValue, setEditingValue] = useState('');
+  const [selectedProvider, setSelectedProvider] = useState<ProviderName | null>(null);
 
-  const resolvedConfig = useMemo(() => loadConfig(cwd), [cwd, userConfig, screen, status]);
-  const resolvedRules = useMemo(() => resolveRules(cwd), [cwd, userConfig, screen, status]);
+  const menuItems = useMemo(() => [
+    { label: 'View current config', value: 'view' as const },
+    { label: 'Set default model', value: 'model' as const },
+    { label: 'Manage API keys', value: 'api' as const },
+    { label: 'Edit allowed tools', value: 'allow' as const },
+    { label: 'Edit blocked tools', value: 'block' as const },
+    { label: 'Edit IRIS.md', value: 'edit-project' as const },
+    { label: 'Edit global config', value: 'edit-global' as const },
+    { label: 'Exit', value: 'exit' as const },
+  ], []);
 
-  useInput((input, key) => {
-    if (screen === 'menu') {
-      if (key.upArrow) {
-        setMenuIndex((current) => (current + MENU_OPTIONS.length - 1) % MENU_OPTIONS.length);
-        return;
-      }
-      if (key.downArrow) {
-        setMenuIndex((current) => (current + 1) % MENU_OPTIONS.length);
-        return;
-      }
-      if (key.return) {
-        handleMenuSelection(menuIndex);
-        return;
-      }
-      if (input === 'q' || key.escape) {
-        onExit();
-      }
-      return;
-    }
+  async function refreshStatus(nextStatus: string): Promise<void> {
+    setStatus(nextStatus);
+    const config = await reloadConfig(cwd);
+    setResolvedConfig(config);
+  }
 
-    if (screen === 'view') {
-      if (key.escape || input === 'b') {
-        setScreen('menu');
-      }
-      return;
-    }
+  async function saveGlobalConfig(nextConfig: GlobalConfig, nextStatus: string): Promise<void> {
+    writeGlobalConfig(nextConfig);
+    setGlobalConfig(nextConfig);
+    await refreshStatus(nextStatus);
+  }
 
-    if (screen === 'mode') {
-      if (key.upArrow) {
-        setModeIndex((current) => (current + MODE_OPTIONS.length - 1) % MODE_OPTIONS.length);
-        return;
-      }
-      if (key.downArrow) {
-        setModeIndex((current) => (current + 1) % MODE_OPTIONS.length);
-        return;
-      }
-      if (key.return) {
-        saveConfig({ ...userConfig, mode: MODE_OPTIONS[modeIndex] });
-        setScreen('menu');
-        return;
-      }
-      if (key.escape) {
-        setScreen('menu');
-      }
-      return;
-    }
-
-    if (screen === 'api-select') {
-      if (key.upArrow) {
-        setApiIndex((current) => (current + API_KEY_FIELDS.length - 1) % API_KEY_FIELDS.length);
-        return;
-      }
-      if (key.downArrow) {
-        setApiIndex((current) => (current + 1) % API_KEY_FIELDS.length);
-        return;
-      }
-      if (key.return) {
-        const field = API_KEY_FIELDS[apiIndex];
-        setEditingField(field.key);
-        setEditingValue(String(userConfig[field.key] ?? ''));
-        setScreen('api-input');
-        return;
-      }
-      if (key.escape) {
-        setScreen('menu');
-      }
-    }
-  });
-
-  function handleMenuSelection(index: number): void {
-    switch (MENU_OPTIONS[index]) {
-      case 'View current resolved config':
+  async function handleMenuSelect(item: { value: MenuValue }): Promise<void> {
+    switch (item.value) {
+      case 'view':
         setScreen('view');
         return;
-      case 'Set default mode':
-        setModeIndex(Math.max(0, MODE_OPTIONS.indexOf(userConfig.mode ?? 'default')));
-        setScreen('mode');
+      case 'model':
+        setScreen('model');
         return;
-      case 'Edit allowed tools list':
-        setEditingField('allowed_tools');
-        setEditingValue((userConfig.allowed_tools ?? []).join(', '));
+      case 'api':
+        setScreen('api-list');
+        return;
+      case 'allow':
+        setEditingValue(resolvedConfig.permissions.allowed_tools.join(', '));
         setScreen('allowed');
         return;
-      case 'Edit blocked tools list':
-        setEditingField('disallowed_tools');
-        setEditingValue((userConfig.disallowed_tools ?? []).join(', '));
+      case 'block':
+        setEditingValue(resolvedConfig.permissions.disallowed_tools.join(', '));
         setScreen('blocked');
         return;
-      case 'Set/update API keys':
-        setScreen('api-select');
+      case 'edit-project':
+        await openEditor(resolveProjectContextPath(cwd));
+        await refreshStatus('Updated IRIS.md');
         return;
-      case 'Exit':
+      case 'edit-global':
+        await openEditor(getGlobalConfigPath());
+        await refreshStatus('Updated ~/.iris/config.toml');
+        return;
+      case 'exit':
         onExit();
         return;
-      default:
-        return;
     }
-  }
-
-  function saveConfig(nextConfig: Partial<IrisConfig>): void {
-    writeUserConfig(nextConfig);
-    setUserConfig(nextConfig);
-    setStatus('Saved ~/.iris/config.toml');
-  }
-
-  function handleListSubmit(field: 'allowed_tools' | 'disallowed_tools', value: string): void {
-    const items = value
-      .split(',')
-      .map((entry) => entry.trim())
-      .filter(Boolean);
-
-    saveConfig({
-      ...userConfig,
-      [field]: items.length > 0 ? items : undefined,
-    });
-    setScreen('menu');
-  }
-
-  function handleApiSubmit(value: string): void {
-    if (!editingField) {
-      setScreen('menu');
-      return;
-    }
-
-    saveConfig({
-      ...userConfig,
-      [editingField]: value.trim() || undefined,
-    });
-    setEditingField(null);
-    setEditingValue('');
-    setScreen('api-select');
   }
 
   return (
@@ -205,53 +189,100 @@ function ConfigApp({ cwd, onExit }: { cwd: string; onExit: () => void }) {
       {status ? <Text color="green">{status}</Text> : null}
 
       {screen === 'menu' ? (
-        <Box flexDirection="column" marginTop={1}>
-          {MENU_OPTIONS.map((option, index) => (
-            <Text key={option} color={index === menuIndex ? 'cyan' : undefined}>
-              {`${index === menuIndex ? '›' : ' '} ${option}`}
-            </Text>
-          ))}
-          <Text color="gray">Enter to select, q to quit</Text>
-        </Box>
+        <SelectInput items={menuItems} onSelect={(item) => void handleMenuSelect(item)} />
       ) : null}
 
       {screen === 'view' ? (
         <Box flexDirection="column" marginTop={1}>
-          <Text bold>Resolved config</Text>
-          {JSON.stringify({
-            mode: resolvedConfig.mode,
-            defaultModel: resolvedConfig.defaultModel,
-            logLevel: resolvedConfig.logLevel,
-            allowed_tools: resolvedConfig.allowed_tools,
-            disallowed_tools: resolvedConfig.disallowed_tools,
-            rules: resolvedRules,
-          }, null, 2).split('\n').map((line, index) => (
+          {formatResolvedConfig(resolvedConfig).split('\n').map((line, index) => (
             <Text key={index} color="gray">{line}</Text>
           ))}
-          <Text color="gray">Esc or b to go back</Text>
+          <Text color="cyan">Press Enter on Exit to return.</Text>
+          <SelectInput
+            items={[{ label: 'Back', value: 'back' as const }]}
+            onSelect={() => setScreen('menu')}
+          />
         </Box>
       ) : null}
 
-      {screen === 'mode' ? (
+      {screen === 'model' ? (
         <Box flexDirection="column" marginTop={1}>
-          <Text bold>Select default mode</Text>
-          {MODE_OPTIONS.map((mode, index) => (
-            <Text key={mode} color={index === modeIndex ? 'cyan' : undefined}>
-              {`${index === modeIndex ? '›' : ' '} ${mode}`}
-            </Text>
-          ))}
-          <Text color="gray">Enter to save, Esc to cancel</Text>
+          <Text bold>Select default model</Text>
+          <SelectInput
+            items={availableModels.map((model) => ({ label: model, value: model }))}
+            onSelect={(item) => {
+              void saveGlobalConfig(
+                { ...globalConfig, default_model: item.value },
+                `Saved default model: ${item.value}`,
+              );
+              setScreen('menu');
+            }}
+          />
+        </Box>
+      ) : null}
+
+      {screen === 'api-list' ? (
+        <Box flexDirection="column" marginTop={1}>
+          <Text bold>Manage API keys</Text>
+          <SelectInput
+            items={[
+              ...PROVIDERS.map((provider) => ({
+                label: `${resolvedConfigProviderApiKey(resolvedConfig, provider) ? '✓' : '–'} ${provider}`,
+                value: provider,
+              })),
+              { label: 'Back', value: 'back' as const },
+            ]}
+            onSelect={(item) => {
+              if (item.value === 'back') {
+                setScreen('menu');
+                return;
+              }
+              setSelectedProvider(item.value);
+              setEditingValue('');
+              setScreen('api-input');
+            }}
+          />
+        </Box>
+      ) : null}
+
+      {screen === 'api-input' && selectedProvider ? (
+        <Box flexDirection="column" marginTop={1}>
+          <Text bold>{`Set ${selectedProvider} API key`}</Text>
+          <Text color="gray">Press enter to save. Leave blank to clear.</Text>
+          <TextInput
+            value={editingValue}
+            onChange={setEditingValue}
+            onSubmit={(value) => {
+              void setApiKey(selectedProvider, value)
+                .then(() => refreshStatus(`Updated API key for ${selectedProvider}`))
+                .then(() => setScreen('api-list'));
+            }}
+          />
         </Box>
       ) : null}
 
       {screen === 'allowed' ? (
         <Box flexDirection="column" marginTop={1}>
           <Text bold>Edit allowed tools</Text>
-          <Text color="gray">Comma-separated tool patterns</Text>
+          <Text color="gray">Comma-separated patterns</Text>
           <TextInput
             value={editingValue}
             onChange={setEditingValue}
-            onSubmit={(value) => handleListSubmit('allowed_tools', value)}
+            onSubmit={(value) => {
+              void saveGlobalConfig(
+                {
+                  ...globalConfig,
+                  permissions: {
+                    ...(globalConfig.permissions ?? {}),
+                    allowed_tools: splitCsv(value),
+                    disallowed_tools: globalConfig.permissions?.disallowed_tools,
+                    mode: globalConfig.permissions?.mode,
+                  },
+                },
+                'Updated allowed tools',
+              );
+              setScreen('menu');
+            }}
           />
         </Box>
       ) : null}
@@ -259,34 +290,109 @@ function ConfigApp({ cwd, onExit }: { cwd: string; onExit: () => void }) {
       {screen === 'blocked' ? (
         <Box flexDirection="column" marginTop={1}>
           <Text bold>Edit blocked tools</Text>
-          <Text color="gray">Comma-separated tool patterns</Text>
+          <Text color="gray">Comma-separated patterns</Text>
           <TextInput
             value={editingValue}
             onChange={setEditingValue}
-            onSubmit={(value) => handleListSubmit('disallowed_tools', value)}
+            onSubmit={(value) => {
+              void saveGlobalConfig(
+                {
+                  ...globalConfig,
+                  permissions: {
+                    ...(globalConfig.permissions ?? {}),
+                    allowed_tools: globalConfig.permissions?.allowed_tools,
+                    disallowed_tools: splitCsv(value),
+                    mode: globalConfig.permissions?.mode,
+                  },
+                },
+                'Updated blocked tools',
+              );
+              setScreen('menu');
+            }}
           />
-        </Box>
-      ) : null}
-
-      {screen === 'api-select' ? (
-        <Box flexDirection="column" marginTop={1}>
-          <Text bold>Select API key to edit</Text>
-          {API_KEY_FIELDS.map((field, index) => (
-            <Text key={field.label} color={index === apiIndex ? 'cyan' : undefined}>
-              {`${index === apiIndex ? '›' : ' '} ${field.label}`}
-            </Text>
-          ))}
-          <Text color="gray">Enter to edit, Esc to go back</Text>
-        </Box>
-      ) : null}
-
-      {screen === 'api-input' ? (
-        <Box flexDirection="column" marginTop={1}>
-          <Text bold>{API_KEY_FIELDS.find((field) => field.key === editingField)?.label ?? 'Edit value'}</Text>
-          <Text color="gray">Press enter to save. Leave blank to clear.</Text>
-          <TextInput value={editingValue} onChange={setEditingValue} onSubmit={handleApiSubmit} />
         </Box>
       ) : null}
     </Box>
   );
+}
+
+function formatResolvedConfig(config: ResolvedConfig): string {
+  return stringifyToml(redactSecrets(config) as Record<string, unknown>);
+}
+
+async function setGlobalConfigValue(expression: string): Promise<void> {
+  const separatorIndex = expression.indexOf('=');
+  if (separatorIndex === -1) {
+    throw new Error('Expected --set key=value');
+  }
+
+  const key = expression.slice(0, separatorIndex).trim();
+  const rawValue = expression.slice(separatorIndex + 1).trim();
+  if (!key) {
+    throw new Error('Expected a non-empty config key');
+  }
+
+  const config = await loadGlobalConfig();
+  const nextConfig = structuredClone(config.config);
+  assignNestedValue(nextConfig as Record<string, unknown>, key.split('.'), parseScalarValue(rawValue));
+  writeGlobalConfig(nextConfig);
+}
+
+function assignNestedValue(target: Record<string, unknown>, path: string[], value: unknown): void {
+  const [head, ...tail] = path;
+  if (!head) {
+    return;
+  }
+
+  if (tail.length === 0) {
+    target[head] = value;
+    return;
+  }
+
+  const next = typeof target[head] === 'object' && target[head] !== null
+    ? target[head] as Record<string, unknown>
+    : {};
+  target[head] = next;
+  assignNestedValue(next, tail, value);
+}
+
+function parseScalarValue(value: string): unknown {
+  if (value.includes(',')) {
+    return splitCsv(value);
+  }
+  if (value === 'true') {
+    return true;
+  }
+  if (value === 'false') {
+    return false;
+  }
+  return value;
+}
+
+function splitCsv(value: string): string[] {
+  return value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function resolvedConfigProviderApiKey(config: ResolvedConfig, provider: ProviderName): string | null {
+  return provider === 'ollama' ? null : config.providers[provider].apiKey;
+}
+
+function resolveProjectContextPath(cwd: string): string {
+  return `${cwd}/IRIS.md`;
+}
+
+async function openEditor(filePath: string): Promise<void> {
+  const editor = process.env.EDITOR || 'nano';
+  const result = Bun.spawnSync([editor, filePath], {
+    stdin: 'inherit',
+    stdout: 'inherit',
+    stderr: 'inherit',
+  });
+
+  if (result.exitCode !== 0) {
+    throw new Error(`Editor exited with code ${result.exitCode}`);
+  }
 }

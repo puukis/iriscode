@@ -1,4 +1,6 @@
 import type { DiffResult } from './types.ts';
+import type { ResolvedConfig } from '../config/schema.ts';
+import type { GraphSnapshot } from '../graph/model.ts';
 
 export interface IrisEvents {
   'agent:start': { depth: number; model: string; description: string };
@@ -15,6 +17,20 @@ export interface IrisEvents {
     inputTokens: number;
     outputTokens: number;
     totalCostUsd: number;
+  };
+  'config:reloaded': {
+    config: ResolvedConfig;
+  };
+  'graph:update': {
+    snapshot: GraphSnapshot;
+  };
+  'session:saved': {
+    sessionId: string;
+    path: string;
+  };
+  'agent:depth-exceeded': {
+    agentId: string;
+    depth: number;
   };
 }
 

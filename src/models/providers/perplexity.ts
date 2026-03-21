@@ -7,18 +7,20 @@ export class PerplexityAdapter extends BaseAdapter {
   readonly provider = 'perplexity';
   readonly modelId: string;
   private apiKey: string;
+  private baseUrl: string;
 
-  constructor(modelId: string, apiKey?: string) {
+  constructor(modelId: string, apiKey?: string, baseUrl?: string) {
     super();
     const key = apiKey ?? process.env.PERPLEXITY_API_KEY;
     if (!key) throw new ProviderError('API key required. Set PERPLEXITY_API_KEY.', 'perplexity');
     this.modelId = modelId;
     this.apiKey = key;
+    this.baseUrl = baseUrl ?? process.env.PERPLEXITY_BASE_URL ?? 'https://api.perplexity.ai';
   }
 
   async *stream(params: StreamParams): AsyncGenerator<StreamEvent> {
     yield* streamOpenAICompat(
-      { baseUrl: 'https://api.perplexity.ai', apiKey: this.apiKey, modelId: this.modelId, provider: 'perplexity' },
+      { baseUrl: this.baseUrl, apiKey: this.apiKey, modelId: this.modelId, provider: 'perplexity' },
       params,
     );
   }

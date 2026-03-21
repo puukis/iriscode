@@ -30,8 +30,8 @@ export class SkillTool implements Tool {
     }
 
     const candidates = [
-      join(context.cwd, '.iriscode', 'skills', fileName),
-      join(homedir(), '.config', 'iriscode', 'skills', fileName),
+      join(context.cwd, '.iris', 'skills', fileName),
+      join(process.env.HOME ?? homedir(), '.iris', 'skills', fileName),
     ];
 
     for (const path of candidates) {
@@ -55,7 +55,7 @@ export class SkillTool implements Tool {
 
     return fail(
       'skill',
-      `Skill "${fileName}" was not found in .iriscode/skills or ~/.config/iriscode/skills`,
+      `Skill "${fileName}" was not found in .iris/skills or ~/.iris/skills`,
     );
   }
 }

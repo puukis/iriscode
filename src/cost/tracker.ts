@@ -18,6 +18,11 @@ export interface CostTotal {
 
 export class CostTracker {
   private entries: CostEntry[] = [];
+  private readonly onEntry?: (entry: CostEntry) => void;
+
+  constructor(onEntry?: (entry: CostEntry) => void) {
+    this.onEntry = onEntry;
+  }
 
   add(provider: string, model: string, inputTokens: number, outputTokens: number): void {
     const pricing = getPricing(provider, model);
@@ -26,15 +31,7 @@ export class CostTracker {
       (outputTokens / 1000) * pricing.outputPer1k;
 
     const entry: CostEntry = { provider, model, inputTokens, outputTokens, costUsd };
-    this.entries.push(entry);
-
-    bus.emit('cost:update', {
-      provider,
-      model,
-      inputTokens,
-      outputTokens,
-      totalCostUsd: this.total().costUsd,
-    });
+    this.recordEntry(entry);
   }
 
   total(): CostTotal {
@@ -51,6 +48,23 @@ export class CostTracker {
 
   reset(): void {
     this.entries = [];
+  }
+
+  restore(entries: CostEntry[]): void {
+    this.entries = [...entries];
+  }
+
+  recordEntry(entry: CostEntry): void {
+    this.entries.push(entry);
+    this.onEntry?.(entry);
+
+    bus.emit('cost:update', {
+      provider: entry.provider,
+      model: entry.model,
+      inputTokens: entry.inputTokens,
+      outputTokens: entry.outputTokens,
+      totalCostUsd: this.total().costUsd,
+    });
   }
 }
 

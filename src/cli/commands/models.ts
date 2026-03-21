@@ -23,13 +23,13 @@ const PROVIDERS: Array<{
 ];
 
 export async function runModelsCommand(): Promise<void> {
-  loadConfig(); // loads .env into process.env
+  const config = await loadConfig();
 
   console.log('\nIrisCode — Available Models\n');
 
   // Cloud providers
   for (const provider of PROVIDERS) {
-    const hasKey = Boolean(process.env[provider.envVar]);
+    const hasKey = Boolean(config.providers[provider.name as keyof typeof config.providers]?.apiKey);
     const status = hasKey ? '✓' : '–';
     const color = hasKey ? '\x1b[32m' : '\x1b[90m';
     const reset = '\x1b[0m';
@@ -45,7 +45,7 @@ export async function runModelsCommand(): Promise<void> {
   // Ollama — fetch live models
   console.log(`\n  ollama            (local, no key required)`);
   try {
-    const probe = new OllamaAdapter('__probe__');
+    const probe = new OllamaAdapter('__probe__', config.providers.ollama.baseUrl ?? undefined);
     const models = await probe.fetchModels();
     if (models.length === 0) {
       console.log('    (no models installed — run: ollama pull <model>)');

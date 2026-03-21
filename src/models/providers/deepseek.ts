@@ -7,18 +7,20 @@ export class DeepSeekAdapter extends BaseAdapter {
   readonly provider = 'deepseek';
   readonly modelId: string;
   private apiKey: string;
+  private baseUrl: string;
 
-  constructor(modelId: string, apiKey?: string) {
+  constructor(modelId: string, apiKey?: string, baseUrl?: string) {
     super();
     const key = apiKey ?? process.env.DEEPSEEK_API_KEY;
     if (!key) throw new ProviderError('API key required. Set DEEPSEEK_API_KEY.', 'deepseek');
     this.modelId = modelId;
     this.apiKey = key;
+    this.baseUrl = baseUrl ?? process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com/v1';
   }
 
   async *stream(params: StreamParams): AsyncGenerator<StreamEvent> {
     yield* streamOpenAICompat(
-      { baseUrl: 'https://api.deepseek.com/v1', apiKey: this.apiKey, modelId: this.modelId, provider: 'deepseek' },
+      { baseUrl: this.baseUrl, apiKey: this.apiKey, modelId: this.modelId, provider: 'deepseek' },
       params,
     );
   }

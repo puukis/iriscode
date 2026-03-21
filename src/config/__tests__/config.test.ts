@@ -27,13 +27,14 @@ describe('config', () => {
       },
       async () => {
         await withCwd(cwd, async () => {
-          const config = loadConfig();
-          expect(config.openaiApiKey).toBe('test-openai');
-          expect(config.defaultModel).toBe('openai/gpt-4o-mini');
-          expect(config.logLevel).toBe('debug');
-          expect(config.mode).toBe('default');
-          expect(loadProjectConfig(cwd)).toMatchObject({
-            mode: 'default',
+          const config = await loadConfig();
+          expect(config.providers.openai.apiKey).toBe('test-openai');
+          expect(config.default_model).toBe('openai/gpt-4o-mini');
+          expect(config.log_level).toBe('debug');
+          expect(config.permissions.mode).toBe('default');
+          expect(config.context_text).toBe('');
+          await expect(loadProjectConfig(cwd)).resolves.toMatchObject({
+            config: {},
           });
           expect(Bun.file(join(cwd, PROJECT_STATE_DIR, PROJECT_SETTINGS_FILE)).size).toBeGreaterThan(0);
           expect(Bun.file(join(cwd, '.iris', '.gitignore')).size).toBeGreaterThan(0);
@@ -49,32 +50,40 @@ describe('config', () => {
     const cwd = makeTempDir('iriscode-config-project-');
     const home = makeTempDir('iriscode-config-home-');
     writeFile(
-      join(cwd, PROJECT_STATE_DIR, PROJECT_SETTINGS_FILE),
-      JSON.stringify({
-        mode: 'acceptEdits',
-        permissions: {
-          allow: ['Read(/tmp/demo.txt)', 'Write(src/index.ts)'],
-          deny: ['GitCommit'],
-        },
-      }, null, 2),
+      join(cwd, 'IRIS.md'),
+      [
+        '# Demo',
+        '',
+        '## Config',
+        '',
+        '```yaml',
+        'model: openai/gpt-4o-mini',
+        'permissions:',
+        '  mode: acceptEdits',
+        '  allowed_tools: [Read(/tmp/demo.txt), Write(src/index.ts)]',
+        '  disallowed_tools: [GitCommit]',
+        '```',
+      ].join('\n'),
     );
 
     await withEnv({ HOME: home }, async () => {
       writeUserConfig({
-        mode: 'plan',
-        allowed_tools: ['bash:echo'],
-        disallowed_tools: ['bash:rm'],
+        permissions: {
+          mode: 'plan',
+          allowed_tools: ['bash:echo'],
+          disallowed_tools: ['bash:rm'],
+        },
       });
 
-      const projectConfig = loadProjectConfig(cwd);
+      const projectConfig = await loadProjectConfig(cwd);
       const userConfig = loadUserConfig();
 
-      expect(projectConfig.mode).toBe('acceptEdits');
-      expect(projectConfig.allowed_tools).toEqual(['Read(/tmp/demo.txt)', 'Write(src/index.ts)']);
-      expect(projectConfig.disallowed_tools).toEqual(['GitCommit']);
-      expect(userConfig.mode).toBe('plan');
-      expect(userConfig.allowed_tools).toEqual(['bash:echo']);
-      expect(userConfig.disallowed_tools).toEqual(['bash:rm']);
+      expect(projectConfig.config.permissions?.mode).toBe('acceptEdits');
+      expect(projectConfig.config.permissions?.allowed_tools).toEqual(['Read(/tmp/demo.txt)', 'Write(src/index.ts)']);
+      expect(projectConfig.config.permissions?.disallowed_tools).toEqual(['GitCommit']);
+      expect(userConfig.permissions?.mode).toBe('plan');
+      expect(userConfig.permissions?.allowed_tools).toEqual(['bash:echo']);
+      expect(userConfig.permissions?.disallowed_tools).toEqual(['bash:rm']);
     });
 
     cleanupDir(cwd);

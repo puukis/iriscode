@@ -3,7 +3,7 @@ import { join } from 'path';
 import { readFileSync } from 'fs';
 import { runAgentLoop } from '../loop.ts';
 import { runSubagentTask } from '../orchestrator.ts';
-import { buildDefaultSystemPrompt } from '../system-prompt.ts';
+import { buildDefaultSystemPrompt, buildSubagentSystemPrompt } from '../system-prompt.ts';
 import { bus } from '../../shared/events.ts';
 import { PermissionEngine } from '../../permissions/engine.ts';
 import { ModelRegistry } from '../../models/registry.ts';
@@ -155,6 +155,15 @@ describe('agent', () => {
     expect(prompt).toContain('read, write, git-status');
     expect(prompt).toContain('Decide autonomously whether a tool will help');
     expect(prompt).toContain('Use tools proactively when they are useful');
+    expect(prompt).toContain('store them under .iris/');
+    expect(prompt).toContain('.iris/memory/assistant-name.txt');
+  });
+
+  test('buildSubagentSystemPrompt requires a final report for the parent agent', () => {
+    const prompt = buildSubagentSystemPrompt(true, ['read', 'task']);
+    expect(prompt).toContain('You are running as an isolated subagent');
+    expect(prompt).toContain('You must end with a concrete plain-text report for the parent agent');
+    expect(prompt).toContain('Use the task tool only if the subtask truly requires deeper delegation');
   });
 
   test('runAgentLoop denies blocked tools and lets the model continue', async () => {
@@ -273,7 +282,7 @@ describe('agent', () => {
 
     expect(result.finalText).toBe('Plan drafted.');
     expect(result.plannedToolCalls).toEqual([{ name: 'write', input: { path: 'todo.md', content: 'draft' } }]);
-    expect(infoMessages.some((message) => message.includes('[PLAN MODE] Planned tool calls:'))).toBe(true);
+    expect(infoMessages.some((message) => message.includes('[PLAN MODE] Planned steps:'))).toBe(true);
     cleanupDir(home);
   });
 

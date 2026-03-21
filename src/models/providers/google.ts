@@ -34,8 +34,9 @@ export class GoogleAdapter extends BaseAdapter {
   readonly provider = 'google';
   readonly modelId: string;
   private apiKey: string;
+  private baseUrl: string;
 
-  constructor(modelId: string, apiKey?: string) {
+  constructor(modelId: string, apiKey?: string, baseUrl?: string) {
     super();
     const key = apiKey ?? process.env.GOOGLE_API_KEY;
     if (!key) {
@@ -46,6 +47,7 @@ export class GoogleAdapter extends BaseAdapter {
     }
     this.modelId = modelId;
     this.apiKey = key;
+    this.baseUrl = baseUrl ?? process.env.GOOGLE_BASE_URL ?? BASE_URL;
   }
 
   async *stream(params: StreamParams): AsyncGenerator<StreamEvent> {
@@ -71,7 +73,7 @@ export class GoogleAdapter extends BaseAdapter {
       }];
     }
 
-    const url = `${BASE_URL}/v1beta/models/${this.modelId}:streamGenerateContent?key=${this.apiKey}&alt=sse`;
+    const url = `${this.baseUrl}/v1beta/models/${this.modelId}:streamGenerateContent?key=${this.apiKey}&alt=sse`;
 
     let response: Response;
     try {
