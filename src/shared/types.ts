@@ -50,6 +50,7 @@ export interface StreamParams {
   messages: Message[];
   tools: ToolDefinitionSchema[];
   systemPrompt?: string;
+  maxTokens?: number;
 }
 
 export interface ToolDefinitionSchema {
