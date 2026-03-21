@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Model-agnostic AI coding agent CLI",
   "bin": {
-    "iriscode": "./src/cli/index.ts"
+    "iriscode": "./src/cli/index.tsx"
   },
   "scripts": {
     "dev": "bun run src/cli/index.ts",
