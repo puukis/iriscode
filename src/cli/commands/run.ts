@@ -46,6 +46,7 @@ export async function runRunCommand(args: string[], options: RunCommandOptions =
   const offFns = parsed.json ? attachJsonlEventStream() : [];
 
   try {
+    let streamedOutput = '';
     const result = await runAgentLoop(history, {
       adapter,
       tools,
@@ -74,6 +75,7 @@ export async function runRunCommand(args: string[], options: RunCommandOptions =
               model,
             ),
       onText: (text) => {
+        streamedOutput += text;
         if (parsed.json) {
           writeJsonLine({ type: 'text', text });
         } else {
@@ -100,8 +102,15 @@ export async function runRunCommand(args: string[], options: RunCommandOptions =
         iterations: result.iterations,
         totalCostUsd: costTracker.total().costUsd,
       });
-    } else if (!result.finalText.endsWith('\n')) {
-      process.stdout.write('\n');
+    } else {
+      if (!streamedOutput && result.finalText) {
+        process.stdout.write(result.finalText);
+      }
+      if (streamedOutput || result.finalText) {
+        if (!(streamedOutput || result.finalText).endsWith('\n')) {
+          process.stdout.write('\n');
+        }
+      }
     }
   } finally {
     offFns.forEach((off) => off());

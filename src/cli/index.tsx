@@ -168,7 +168,10 @@ function App({ modelLabel }: { modelLabel: string }) {
 
         costTracker.add(provider, modelId, result.totalInputTokens, result.totalOutputTokens);
         setSessionCost(costTracker.total().costUsd);
-        setMessages((prev) => [...prev, { role: 'assistant', text: assistantOutput }]);
+        setMessages((prev) => [
+          ...prev,
+          { role: 'assistant', text: assistantOutput || result.finalText || '(no response)' },
+        ]);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         setMessages((prev) => [...prev, { role: 'system', text: `Error: ${message}` }]);

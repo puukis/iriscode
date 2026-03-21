@@ -47,4 +47,28 @@ describe('orchestration tools', () => {
 
     cleanupDir(cwd);
   });
+
+  test('todo-write normalizes common natural-language statuses', async () => {
+    const cwd = makeTempDir('iriscode-orchestration-status-');
+    const context = makeToolContext({ cwd });
+
+    const result = await new TodoWriteTool().execute(
+      {
+        todos: [
+          { id: '1', task: 'Define scope', status: 'not started' },
+          { id: '2', task: 'Build UI', status: 'in progress' },
+          { id: '3', task: 'Ship', status: 'completed' },
+        ],
+      },
+      context,
+    );
+
+    expectOk(result);
+    const content = readFile(join(cwd, '.iriscode', 'todos.md'));
+    expect(content).toContain('| 1 | pending | Define scope |  |');
+    expect(content).toContain('| 2 | in-progress | Build UI |  |');
+    expect(content).toContain('| 3 | done | Ship |  |');
+
+    cleanupDir(cwd);
+  });
 });

@@ -114,6 +114,9 @@ export async function runAgentLoop(
 
       // If no tool calls, we're done
       if (toolCalls.length === 0) {
+        if (!assistantText) {
+          finalText = finalText || getMostRecentToolResultFallback(history) || '';
+        }
         break;
       }
 
@@ -208,4 +211,25 @@ function composeSystemPrompt(basePrompt: string | undefined, loadedSkills: Loade
     .join('\n\n');
 
   return [basePrompt, skillPrompt].filter(Boolean).join('\n\n');
+}
+
+function getMostRecentToolResultFallback(history: Message[]): string | undefined {
+  for (let index = history.length - 1; index >= 0; index--) {
+    const message = history[index];
+    if (typeof message.content === 'string') continue;
+
+    const toolResults = message.content.filter((block) => block.type === 'tool_result');
+    if (toolResults.length === 0) continue;
+
+    const content = toolResults
+      .map((block) => block.content.trim())
+      .filter(Boolean)
+      .join('\n');
+
+    if (content) {
+      return content;
+    }
+  }
+
+  return undefined;
 }

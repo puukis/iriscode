@@ -16,7 +16,8 @@ interface TodoItem {
 export class TodoWriteTool implements Tool {
   readonly definition: ToolDefinitionSchema = {
     name: 'todo-write',
-    description: 'Write a structured todo list to .iriscode/todos.md in the project root.',
+    description:
+      'Persist a structured todo list to .iriscode/todos.md in the project root for project task tracking. Do not use this for ordinary list-writing in chat.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -28,7 +29,11 @@ export class TodoWriteTool implements Tool {
             properties: {
               id: { type: 'string' },
               task: { type: 'string' },
-              status: { type: 'string', enum: ['pending', 'in-progress', 'done'] },
+              status: {
+                type: 'string',
+                enum: ['pending', 'in-progress', 'done'],
+                description: 'Canonical values are pending, in-progress, or done',
+              },
               notes: { type: 'string' },
             },
             required: ['id', 'task', 'status'],
@@ -78,16 +83,37 @@ function parseTodo(value: unknown): { value: TodoItem } | { error: ToolResult } 
   const item = value as Record<string, unknown>;
   const id = typeof item['id'] === 'string' ? item['id'].trim() : '';
   const task = typeof item['task'] === 'string' ? item['task'].trim() : '';
-  const status = item['status'];
+  const status = normalizeStatus(item['status']);
   const notes = typeof item['notes'] === 'string' ? item['notes'].trim() : undefined;
 
   if (!id) return { error: fail('todo-write', 'each todo id must be a non-empty string') };
   if (!task) return { error: fail('todo-write', 'each todo task must be a non-empty string') };
-  if (status !== 'pending' && status !== 'in-progress' && status !== 'done') {
+  if (!status) {
     return { error: fail('todo-write', 'each todo status must be pending, in-progress, or done') };
   }
 
   return { value: { id, task, status, notes } };
+}
+
+function normalizeStatus(value: unknown): TodoStatus | null {
+  if (typeof value !== 'string') return null;
+
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return null;
+
+  if (['pending', 'not started', 'not-started', 'todo', 'to-do', 'open'].includes(normalized)) {
+    return 'pending';
+  }
+
+  if (['in-progress', 'in progress', 'active', 'started', 'doing'].includes(normalized)) {
+    return 'in-progress';
+  }
+
+  if (['done', 'complete', 'completed', 'finished'].includes(normalized)) {
+    return 'done';
+  }
+
+  return null;
 }
 
 function renderTodosMarkdown(todos: TodoItem[]): string {

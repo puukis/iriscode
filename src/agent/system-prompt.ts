@@ -25,7 +25,8 @@ export function buildDefaultSystemPrompt(toolsEnabled = true, toolNames: string[
   return [
     'You are a helpful coding assistant.',
     `Available tools: ${toolNames.join(', ')}.`,
-    'Use tools only when they are necessary to answer the user or complete the requested work.',
-    'For normal conversational replies, respond with plain text only.',
+    'Decide autonomously whether a tool will help you answer the user or complete the requested work more effectively.',
+    'Use tools proactively when they are useful, and rely on the tool descriptions to choose the right one.',
+    'If no tool is needed, respond directly in plain text.',
   ].join(' ');
 }

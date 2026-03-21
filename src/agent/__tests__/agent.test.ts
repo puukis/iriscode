@@ -55,6 +55,47 @@ describe('agent', () => {
     expect(streamCalls).toBe(2);
   });
 
+  test('runAgentLoop falls back to the latest tool result when the follow-up assistant turn is empty', async () => {
+    let streamCalls = 0;
+    const adapter = new FakeAdapter('test', 'fallback-model', async function* () {
+      streamCalls += 1;
+      if (streamCalls === 1) {
+        yield {
+          type: 'tool_call',
+          toolCall: { id: 'tool-1', name: 'echo', input: { value: 'saved todo list' } },
+        };
+        yield { type: 'done', stopReason: 'tool_use', inputTokens: 1, outputTokens: 1 };
+        return;
+      }
+
+      yield { type: 'done', stopReason: 'end_turn', inputTokens: 1, outputTokens: 1 };
+    });
+
+    const modelRegistry = new ModelRegistry();
+    modelRegistry.register('test/fallback-model', adapter);
+
+    const tools = new ToolRegistry();
+    tools.register({
+      definition: {
+        name: 'echo',
+        description: 'Echo a value',
+        inputSchema: { type: 'object', properties: { value: { type: 'string' } }, required: ['value'] },
+      },
+      async execute(input) {
+        return { content: String(input.value) };
+      },
+    });
+
+    const result = await runAgentLoop([{ role: 'user', content: 'Do the thing' }], {
+      adapter,
+      tools,
+      permissions: new PermissionsEngine('acceptAll'),
+      modelRegistry,
+    });
+
+    expect(result.finalText).toBe('saved todo list');
+  });
+
   test('runSubagentTask emits events and enforces depth limit', async () => {
     const adapter = new FakeAdapter('test', 'subagent-model', async function* () {
       yield { type: 'text', text: 'subagent ok' };
@@ -93,5 +134,7 @@ describe('agent', () => {
   test('buildDefaultSystemPrompt lists available tools', () => {
     const prompt = buildDefaultSystemPrompt(true, ['read', 'write', 'git-status']);
     expect(prompt).toContain('read, write, git-status');
+    expect(prompt).toContain('Decide autonomously whether a tool will help');
+    expect(prompt).toContain('Use tools proactively when they are useful');
   });
 });
