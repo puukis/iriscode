@@ -140,6 +140,12 @@ export class OllamaAdapter extends BaseAdapter {
           }
         }
       }
+      yield {
+        type: 'done',
+        stopReason,
+        inputTokens: promptTokens,
+        outputTokens: evalTokens,
+      };
     } catch (err) {
       if (err instanceof ProviderError) throw err;
       throw new ProviderError(
@@ -149,13 +155,6 @@ export class OllamaAdapter extends BaseAdapter {
     } finally {
       reader.releaseLock();
     }
-
-    yield {
-      type: 'done',
-      stopReason,
-      inputTokens: promptTokens,
-      outputTokens: evalTokens,
-    };
   }
 
   async countTokens(_params: StreamParams): Promise<number> {
@@ -188,8 +187,15 @@ export class OllamaAdapter extends BaseAdapter {
       );
     }
 
-    const data = (await response.json()) as { models: Array<{ name: string }> };
-    return data.models.map((m) => m.name);
+    const data = (await response.json()) as unknown;
+    if (
+      typeof data !== 'object' ||
+      data === null ||
+      !Array.isArray((data as Record<string, unknown>).models)
+    ) {
+      throw new ProviderError('Unexpected response shape from Ollama /api/tags', 'ollama');
+    }
+    return ((data as { models: Array<{ name: string }> }).models).map((m) => m.name);
   }
 }
 
@@ -207,12 +213,13 @@ function historyToOllama(messages: Message[], systemPrompt?: string): OllamaMess
       typeof m.content === 'string'
         ? m.content
         : m.content
-            .filter((b) => b.type === 'text' || b.type === 'tool_result')
             .map((b) => {
               if (b.type === 'text') return b.text;
               if (b.type === 'tool_result') return b.content;
+              if (b.type === 'tool_use') return `[tool_use: ${b.name}]`;
               return '';
             })
+            .filter(Boolean)
             .join('\n');
 
     result.push({ role: m.role, content });
