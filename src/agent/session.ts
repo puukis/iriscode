@@ -11,6 +11,8 @@ import { bus } from '../shared/events.ts';
 import { CostTracker } from '../cost/tracker.ts';
 import { GraphTracker } from '../graph/tracker.ts';
 import { Orchestrator } from './orchestrator.ts';
+import { DiffStore } from '../diff/store.ts';
+import type { DiffDecision } from '../diff/controller.ts';
 import type {
   DetachedPromptRequest,
   LoadedMemoryFile,
@@ -21,6 +23,7 @@ import type {
   SessionState,
 } from '../commands/types.ts';
 import { loadConfig } from '../config/loader.ts';
+import type { DiffResult } from '../shared/types.ts';
 
 const PROJECT_SESSION_DIR = '.iris/sessions';
 const GLOBAL_PROJECTS_DIR = '.iris/projects';
@@ -36,6 +39,7 @@ interface SessionHooks {
   onGetToolDefinitions?: (allowedTools?: string[]) => ReturnType<SessionState['getToolDefinitions']>;
   onOpenModelPicker?: () => Promise<string | undefined>;
   onOpenSessionPicker?: (sessions: SessionSnapshotSummary[]) => Promise<SessionSnapshotSummary | undefined>;
+  onViewDiff?: (diff: DiffResult, options?: { readOnly?: boolean; autoAccept?: boolean }) => Promise<DiffDecision | void>;
   onRestoreSnapshot?: (snapshot: SessionSnapshot) => void;
   onRefreshContext?: () => Promise<void>;
   onSetModel?: (model: string) => void | Promise<void>;
@@ -56,6 +60,7 @@ interface SessionOptions {
   totalOutputTokens?: number;
   memoryFiles?: LoadedMemoryFile[];
   costTracker?: CostTracker;
+  diffStore?: DiffStore;
   autosave?: boolean;
   hooks?: SessionHooks;
 }
@@ -73,6 +78,7 @@ export class Session implements SessionState {
   memoryFiles: LoadedMemoryFile[];
   memoryMaxTokens: number;
   readonly costTracker: CostTracker;
+  readonly diffStore: DiffStore;
   graphTracker: GraphTracker;
   orchestrator: Orchestrator;
   readonly cwd: string;
@@ -97,6 +103,7 @@ export class Session implements SessionState {
     this.memoryFiles = [...(options.memoryFiles ?? [])];
     this.memoryMaxTokens = options.config.memory.max_tokens;
     this.costTracker = options.costTracker ?? new CostTracker();
+    this.diffStore = options.diffStore ?? new DiffStore();
     this.graphTracker = new GraphTracker('root agent', this.model);
     this.orchestrator = new Orchestrator(options.config, this.graphTracker, this.permissionEngine, {
       cwd: this.cwd,
@@ -196,6 +203,13 @@ export class Session implements SessionState {
 
   async openSessionPicker(sessions: SessionSnapshotSummary[]): Promise<SessionSnapshotSummary | undefined> {
     return this.hooks.onOpenSessionPicker?.(sessions);
+  }
+
+  async viewDiff(
+    diff: DiffResult,
+    options?: { readOnly?: boolean; autoAccept?: boolean },
+  ): Promise<DiffDecision | void> {
+    return this.hooks.onViewDiff?.(diff, options);
   }
 
   restoreSession(snapshot: SessionSnapshot): void {

@@ -28,6 +28,7 @@ export function buildDefaultSystemPrompt(toolsEnabled = true, toolNames: string[
     'Decide autonomously whether a tool will help you answer the user or complete the requested work more effectively.',
     'Use tools proactively when they are useful, and rely on the tool descriptions to choose the right one.',
     'If you persist project-local assistant memory, preferences, or notes for later reuse, store them under .iris/ with a descriptive path such as .iris/memory/assistant-name.txt instead of inventing dotfiles in the project root.',
+    'If the user already gives a path under .iris/, use that path exactly. Do not prepend another .iris/ segment.',
     'When saving a user or assistant fact to .iris/memory, write the fact in clear natural language so it can be reused later.',
     'Only create project-root files when the user explicitly asks for a user-facing project file there.',
     'If no tool is needed, respond directly in plain text.',

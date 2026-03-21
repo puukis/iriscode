@@ -30,10 +30,36 @@ export interface SessionState {
 }
 export type { PermissionMode } from '../permissions/types.ts';
 
+export type DiffLineType = 'added' | 'removed' | 'unchanged';
+
+export interface DiffLine {
+  type: DiffLineType;
+  content: string;
+  oldLineNumber?: number;
+  newLineNumber?: number;
+}
+
+export interface DiffHunk {
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  lines: DiffLine[];
+}
+
+export interface DiffStats {
+  added: number;
+  removed: number;
+  unchanged: number;
+}
+
 export interface DiffResult {
   filePath: string;
   before: string;
   after: string;
+  hunks: DiffHunk[];
+  stats: DiffStats;
+  isEmpty: boolean;
 }
 
 export interface StreamEvent {

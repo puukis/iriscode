@@ -1,8 +1,10 @@
 import type { CostEntry, CostTracker } from '../cost/tracker.ts';
 import type { ResolvedConfig } from '../config/schema.ts';
+import type { DiffDecision } from '../diff/controller.ts';
+import type { DiffStore } from '../diff/store.ts';
 import type { PermissionEngine } from '../permissions/engine.ts';
 import type { PermissionMode } from '../permissions/types.ts';
-import type { Message, ToolDefinitionSchema } from '../shared/types.ts';
+import type { DiffResult, Message, ToolDefinitionSchema } from '../shared/types.ts';
 
 export type CommandCategory = 'builtin' | 'custom' | 'skill';
 
@@ -78,6 +80,7 @@ export interface SessionState {
   memoryFiles: LoadedMemoryFile[];
   memoryMaxTokens: number;
   costTracker: CostTracker;
+  diffStore: DiffStore;
   clear(): void;
   compact(summary: string): void;
   setModel(model: string): Promise<void> | void;
@@ -90,6 +93,7 @@ export interface SessionState {
   getToolDefinitions(allowedTools?: string[]): ToolDefinitionSchema[];
   openModelPicker(): Promise<string | undefined>;
   openSessionPicker(sessions: SessionSnapshotSummary[]): Promise<SessionSnapshotSummary | undefined>;
+  viewDiff(diff: DiffResult, options?: { readOnly?: boolean; autoAccept?: boolean }): Promise<DiffDecision | void>;
   restoreSession(snapshot: SessionSnapshot): void;
   refreshContext(): Promise<void>;
 }

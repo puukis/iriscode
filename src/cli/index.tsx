@@ -12,12 +12,15 @@ import { setApiKey } from '../config/secrets.ts';
 import { startConfigWatcher } from '../config/watcher.ts';
 import type { ResolvedConfig } from '../config/schema.ts';
 import { costTracker } from '../cost/tracker.ts';
+import { DiffViewerController, type DiffViewerRequest } from '../diff/controller.ts';
+import { DiffInterceptor } from '../diff/interceptor.ts';
+import { DiffStore } from '../diff/store.ts';
 import { createDefaultRegistry as createModelRegistry, parseModelString } from '../models/registry.ts';
 import { PermissionEngine } from '../permissions/engine.ts';
 import type { PermissionMode, PermissionRequest, PermissionResult } from '../permissions/types.ts';
 import { bus } from '../shared/events.ts';
 import { logger } from '../shared/logger.ts';
-import type { Message, ToolDefinitionSchema } from '../shared/types.ts';
+import type { DiffResult, Message, ToolDefinitionSchema } from '../shared/types.ts';
 import { createDefaultRegistry as createCommandRegistry, CommandRegistry } from '../commands/registry.ts';
 import { loadCustomCommands } from '../commands/custom/loader.ts';
 import { registerSkillCommands } from '../commands/skill-bridge.ts';
@@ -25,6 +28,7 @@ import { type LoadedMemoryFile, type SessionSnapshotSummary } from '../commands/
 import { handleInput } from './input-handler.ts';
 import { PermissionPrompt } from '../ui/components/permission-prompt.tsx';
 import { CommandPalette } from '../ui/components/command-palette.tsx';
+import { DiffViewer } from '../ui/components/diff-viewer.tsx';
 import { ModelPicker } from '../ui/components/model-picker.tsx';
 import { SessionPicker } from '../ui/components/session-picker.tsx';
 import { TaskGraph } from '../ui/components/task-graph.tsx';
@@ -110,6 +114,8 @@ interface PendingPermissionPrompt {
   resolve: (choice: ToolPermissionChoice) => void;
 }
 
+type PendingDiffView = DiffViewerRequest;
+
 type OverlayState =
   | {
       kind: 'model-picker';
@@ -158,6 +164,7 @@ function App({
   const [sessionCost, setSessionCost] = useState(0);
   const [pendingQuestion, setPendingQuestion] = useState<string | null>(null);
   const [pendingPermission, setPendingPermission] = useState<PendingPermissionPrompt | null>(null);
+  const [pendingDiff, setPendingDiff] = useState<PendingDiffView | null>(null);
   const [overlay, setOverlay] = useState<OverlayState | null>(null);
   const [questionInput, setQuestionInput] = useState('');
   const [commandPlaceholder, setCommandPlaceholder] = useState('Ask anything...');
@@ -178,6 +185,15 @@ function App({
   const totalOutputTokensRef = useRef(0);
   const commandRegistryRef = useRef<CommandRegistry | null>(null);
   const sessionRef = useRef<Session | null>(null);
+  const diffStoreRef = useRef(new DiffStore());
+  const diffControllerRef = useRef(
+    new DiffViewerController((request) => {
+      setPendingDiff(request);
+    }),
+  );
+  const diffInterceptorRef = useRef(
+    new DiffInterceptor(diffStoreRef.current, initialMode, diffControllerRef.current),
+  );
   const modelPinnedRef = useRef(Boolean(modelOverride));
   const modePinnedRef = useRef(Boolean(modeOverride));
 
@@ -209,6 +225,7 @@ function App({
   useEffect(() => {
     activeModeRef.current = activeMode;
     permissionsRef.current.setMode(activeMode);
+    diffInterceptorRef.current.setMode(activeMode);
     if (sessionRef.current) {
       sessionRef.current.permissionMode = activeMode;
     }
@@ -350,6 +367,7 @@ function App({
           askUser,
           onInfo: writeSystemMessage,
           onPermissionPrompt: requestPermission,
+          diffInterceptor: diffInterceptorRef.current,
         });
 
         const adapter = modelRegistry.get(modelKey);
@@ -360,6 +378,7 @@ function App({
           tracker: session.graphTracker,
           agentId: 'root',
           depth: 0,
+          diffInterceptor: diffInterceptorRef.current,
         });
         const permissions = session.permissionEngine;
         permissionsRef.current = permissions;
@@ -451,6 +470,7 @@ function App({
       session.orchestrator.updateRuntime({
         currentModel: modelKey,
         loadedSkills: loadedSkillsRef.current,
+        diffInterceptor: diffInterceptorRef.current,
       });
 
       const adapter = modelRegistry.get(modelKey);
@@ -461,6 +481,7 @@ function App({
         tracker: session.graphTracker,
         agentId: 'root',
         depth: 0,
+        diffInterceptor: diffInterceptorRef.current,
       });
       const permissions = session.permissionEngine;
       const systemPrompt = options.systemPrompt ?? appendContextText(
@@ -519,6 +540,7 @@ function App({
       displayMessages: displayMessagesRef.current,
       memoryFiles: memoryFilesRef.current,
       costTracker,
+      diffStore: diffStoreRef.current,
       hooks: {
         onClear: () => {
           historyRef.current = [];
@@ -564,7 +586,14 @@ function App({
             tracker: sessionRef.current?.graphTracker,
             agentId: 'root',
             depth: 0,
+            diffInterceptor: diffInterceptorRef.current,
           }).getDefinitions(),
+        onViewDiff: async (diff, options) => {
+          if (options?.readOnly) {
+            return diffControllerRef.current.showReadOnly(diff);
+          }
+          return diffControllerRef.current.show(diff, Boolean(options?.autoAccept));
+        },
         onOpenModelPicker: async () => {
           const registry = await createModelRegistry(configRef.current);
           return new Promise<string | undefined>((resolve) => {
@@ -673,6 +702,7 @@ function App({
         }
         const nextEngine = new PermissionEngine(nextMode, cwd);
         permissionsRef.current = nextEngine;
+        diffInterceptorRef.current.setMode(nextMode);
         sessionRef.current?.replacePermissionEngine(nextEngine);
         sessionRef.current?.updateConfig(nextConfig, nextMemoryFiles);
         writeSystemMessage(
@@ -703,7 +733,7 @@ function App({
   }, [commandRegistry, input]);
 
   useInput((_input, key) => {
-    if (pendingQuestion || pendingPermission || overlay || running) {
+    if (pendingQuestion || pendingPermission || pendingDiff || overlay || running) {
       return;
     }
     if (!paletteState || paletteState.hasArgs || paletteState.entries.length === 0) {
@@ -754,6 +784,32 @@ function App({
     });
   }, []);
 
+  const handleDiffDecision = useCallback((decision: 'accepted' | 'rejected') => {
+    setPendingDiff((current) => {
+      if (!current || current.kind !== 'interactive') {
+        return current;
+      }
+
+      current.resolve(decision);
+      return null;
+    });
+  }, []);
+
+  const handleDiffAcceptAll = useCallback(() => {
+    diffControllerRef.current.acceptAll();
+  }, []);
+
+  const handleDiffClose = useCallback(() => {
+    setPendingDiff((current) => {
+      if (!current || current.kind !== 'readonly') {
+        return current;
+      }
+
+      current.resolve();
+      return null;
+    });
+  }, []);
+
   const handleInputChange = useCallback((value: string) => {
     setInput(value);
     setCommandPaletteIndex(0);
@@ -781,6 +837,8 @@ function App({
       if (!trimmed) {
         return;
       }
+
+      diffControllerRef.current.reset();
 
       if (paletteState && !paletteState.hasArgs && paletteState.entries.length > 0) {
         const selected = paletteState.entries[commandPaletteIndex] ?? paletteState.entries[0];
@@ -853,6 +911,17 @@ function App({
           request={pendingPermission.request}
           tool={pendingPermission.tool}
           onSelect={handlePermissionChoice}
+        />
+      ) : pendingDiff ? (
+        <DiffViewer
+          result={pendingDiff.result}
+          mode="sideBySide"
+          readOnly={pendingDiff.kind === 'readonly'}
+          autoAccept={pendingDiff.kind === 'interactive' ? pendingDiff.autoAccept : false}
+          onAccept={() => handleDiffDecision('accepted')}
+          onReject={() => handleDiffDecision('rejected')}
+          onAcceptAll={handleDiffAcceptAll}
+          onClose={handleDiffClose}
         />
       ) : overlay?.kind === 'model-picker' ? (
         <ModelPicker

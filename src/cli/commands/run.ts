@@ -3,6 +3,9 @@ import { runAgentLoop } from '../../agent/loop.ts';
 import { Orchestrator } from '../../agent/orchestrator.ts';
 import { loadConfig } from '../../config/loader.ts';
 import { costTracker } from '../../cost/tracker.ts';
+import { DiffViewerController } from '../../diff/controller.ts';
+import { DiffInterceptor } from '../../diff/interceptor.ts';
+import { DiffStore } from '../../diff/store.ts';
 import { createDefaultRegistry as createModelRegistry, parseModelString } from '../../models/registry.ts';
 import { PermissionEngine } from '../../permissions/engine.ts';
 import type { PermissionMode } from '../../permissions/types.ts';
@@ -40,6 +43,9 @@ export async function runRunCommand(args: string[], options: RunCommandOptions =
 
   const adapter = modelRegistry.get(modelKey);
   const permissions = new PermissionEngine(permissionMode, cwd);
+  const diffStore = new DiffStore();
+  const diffController = new DiffViewerController();
+  const diffInterceptor = new DiffInterceptor(diffStore, permissionMode, diffController);
   const history: Message[] = [{ role: 'user', content: parsed.prompt }];
   const loadedSkills: LoadedSkill[] = [];
   const graphTracker = new GraphTracker(parsed.prompt, modelKey);
@@ -48,6 +54,7 @@ export async function runRunCommand(args: string[], options: RunCommandOptions =
     currentModel: modelKey,
     costTracker,
     loadedSkills,
+    diffInterceptor,
   });
   const tools = parsed.noTools
     ? new ToolRegistry()
@@ -57,6 +64,7 @@ export async function runRunCommand(args: string[], options: RunCommandOptions =
         tracker: graphTracker,
         agentId: 'root',
         depth: 0,
+        diffInterceptor,
       });
   const systemPrompt = appendContextText(
     buildDefaultSystemPrompt(

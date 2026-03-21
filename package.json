@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.37.0",
+    "diff": "^8.0.3",
     "dotenv": "^16.4.5",
     "ink": "^5.0.1",
     "ink-select-input": "^6.2.0",

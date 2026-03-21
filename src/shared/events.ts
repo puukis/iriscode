@@ -6,6 +6,11 @@ export interface IrisEvents {
   'agent:start': { depth: number; model: string; description: string };
   'agent:done': { depth: number; model: string; description: string; response: string };
   'diff:ready': DiffResult;
+  'diff:decision': {
+    filePath: string;
+    decision: 'accepted' | 'rejected';
+    stats: DiffResult['stats'];
+  };
   'session:start': { model: string };
   'session:end': { totalInputTokens: number; totalOutputTokens: number };
   'tool:start': { name: string };

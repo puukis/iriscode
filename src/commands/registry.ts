@@ -15,6 +15,10 @@ import {
   handleDoctor,
 } from './builtin/doctor.ts';
 import {
+  DIFF_COMMAND,
+  handleDiff,
+} from './builtin/diff.ts';
+import {
   HELP_COMMAND,
   createHelpHandler,
 } from './builtin/help.ts';
@@ -128,6 +132,7 @@ export function createDefaultRegistry(_ctx: CommandContext): CommandRegistry {
   registry.register(COMPACT_COMMAND, handleCompact);
   registry.register(COST_COMMAND, handleCost);
   registry.register(DOCTOR_COMMAND, handleDoctor);
+  registry.register(DIFF_COMMAND, handleDiff);
   registry.register(HELP_COMMAND, createHelpHandler(registry));
   registry.register(INIT_COMMAND, handleInit);
   registry.register(MCP_COMMAND, handleMcp);

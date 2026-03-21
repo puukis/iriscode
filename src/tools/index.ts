@@ -5,6 +5,7 @@ import type { Message, ToolDefinitionSchema, ToolResult } from '../shared/types.
 import type { CostTracker } from '../cost/tracker.ts';
 import type { Orchestrator } from '../agent/orchestrator.ts';
 import type { GraphTracker } from '../graph/tracker.ts';
+import type { DiffInterceptor } from '../diff/interceptor.ts';
 import { ReadFileTool } from './file/read.ts';
 import { WriteFileTool } from './file/write.ts';
 import { EditFileTool } from './file/edit.ts';
@@ -62,6 +63,7 @@ export interface DefaultToolRegistryOptions {
   tracker?: GraphTracker;
   agentId?: string;
   depth?: number;
+  diffInterceptor?: DiffInterceptor;
 }
 
 export class ToolRegistry {
@@ -107,8 +109,8 @@ export function createDefaultRegistry(options: DefaultToolRegistryOptions = {}):
   };
 
   register(new ReadFileTool());
-  register(new WriteFileTool());
-  register(new EditFileTool());
+  register(new WriteFileTool(options.diffInterceptor));
+  register(new EditFileTool(options.diffInterceptor));
   register(new BashTool());
   register(new GlobTool());
   register(new GrepTool());

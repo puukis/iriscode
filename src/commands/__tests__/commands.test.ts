@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { join } from 'path';
 import { CostTracker } from '../../cost/tracker.ts';
+import { DiffStore } from '../../diff/store.ts';
 import { PermissionEngine } from '../../permissions/engine.ts';
 import { createDefaultRegistry as createCommandRegistry, CommandRegistry } from '../registry.ts';
 import { loadCustomCommands } from '../custom/loader.ts';
@@ -183,6 +184,35 @@ describe('commands', () => {
     cleanupDir(cwd);
     cleanupDir(home);
   });
+
+  test('handleInput renders diff summaries for /diff', async () => {
+    const cwd = makeTempDir('iriscode-commands-project-');
+    const home = makeTempDir('iriscode-commands-home-');
+
+    await withEnv({ HOME: home }, async () => {
+      const ctx = makeCommandContext(cwd);
+      ctx.session.diffStore.add(
+        {
+          filePath: join(cwd, 'src', 'index.ts'),
+          before: 'old\n',
+          after: 'new\n',
+          hunks: [],
+          stats: { added: 1, removed: 1, unchanged: 0 },
+          isEmpty: false,
+        },
+        'accepted',
+      );
+
+      const registry = createCommandRegistry(ctx);
+      const result = await handleInput('/diff', { ...ctx, registry });
+
+      expect(result).toBe('handled');
+      expect(ctx.__systemMessages.some((message) => message.includes('Session diffs'))).toBe(true);
+    });
+
+    cleanupDir(cwd);
+    cleanupDir(home);
+  });
 });
 
 function makeCommandContext(cwd: string): CommandContext & {
@@ -234,6 +264,7 @@ function createMockSession(
   const displayMessages: Array<{ role: 'user' | 'assistant' | 'system'; text: string }> = [];
   const memoryFiles: LoadedMemoryFile[] = [];
   const costTracker = new CostTracker();
+  const diffStore = new DiffStore();
 
   return {
     id: 'session-test',
@@ -248,6 +279,7 @@ function createMockSession(
     memoryFiles,
     memoryMaxTokens: 10000,
     costTracker,
+    diffStore,
     clear() {
       displayMessages.length = 0;
     },
@@ -282,6 +314,9 @@ function createMockSession(
       return undefined;
     },
     async openSessionPicker(_sessions: SessionSnapshotSummary[]) {
+      return undefined;
+    },
+    async viewDiff() {
       return undefined;
     },
     restoreSession(_snapshot: SessionSnapshot) {},

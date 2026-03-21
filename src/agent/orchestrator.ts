@@ -12,6 +12,7 @@ import type { CostTracker } from '../cost/tracker.ts';
 import type { ResolvedConfig } from '../config/schema.ts';
 import type { GraphTracker } from '../graph/tracker.ts';
 import type { AgentNode } from '../graph/model.ts';
+import type { DiffInterceptor } from '../diff/interceptor.ts';
 
 export interface RunSubagentTaskOptions {
   currentModel: string;
@@ -46,6 +47,7 @@ interface OrchestratorRuntimeOptions {
   loadedSkills?: LoadedSkill[];
   onInfo?: AgentLoopOptions['onInfo'];
   onPermissionPrompt?: AgentLoopOptions['onPermissionPrompt'];
+  diffInterceptor?: DiffInterceptor;
 }
 
 export class Orchestrator {
@@ -60,6 +62,7 @@ export class Orchestrator {
   private loadedSkills: LoadedSkill[];
   private onInfo?: OrchestratorRuntimeOptions['onInfo'];
   private onPermissionPrompt?: OrchestratorRuntimeOptions['onPermissionPrompt'];
+  private diffInterceptor?: DiffInterceptor;
   private readonly activeAgents = new Map<string, { id: string; startedAt: number }>();
 
   constructor(
@@ -79,6 +82,7 @@ export class Orchestrator {
     this.loadedSkills = [...(options.loadedSkills ?? [])];
     this.onInfo = options.onInfo;
     this.onPermissionPrompt = options.onPermissionPrompt;
+    this.diffInterceptor = options.diffInterceptor;
   }
 
   updateConfig(config: ResolvedConfig): void {
@@ -118,6 +122,9 @@ export class Orchestrator {
     if (options.onPermissionPrompt !== undefined) {
       this.onPermissionPrompt = options.onPermissionPrompt;
     }
+    if (options.diffInterceptor !== undefined) {
+      this.diffInterceptor = options.diffInterceptor;
+    }
   }
 
   async spawnSubagent(options: SpawnOptions): Promise<string> {
@@ -155,6 +162,7 @@ export class Orchestrator {
       onInfo: this.onInfo,
       onPermissionPrompt: this.onPermissionPrompt,
       parentCostTracker: this.costTracker,
+      diffInterceptor: this.diffInterceptor,
     });
 
     try {

@@ -9,6 +9,7 @@ import { CostTracker } from '../cost/tracker.ts';
 import { createDefaultRegistry as createToolRegistry, type LoadedSkill } from '../tools/index.ts';
 import type { GraphTracker } from '../graph/tracker.ts';
 import type { Orchestrator } from './orchestrator.ts';
+import type { DiffInterceptor } from '../diff/interceptor.ts';
 
 interface SubagentContextOptions {
   id: string;
@@ -26,6 +27,7 @@ interface SubagentContextOptions {
   onInfo?: (text: string) => void;
   onPermissionPrompt?: Parameters<typeof runAgentLoop>[1]['onPermissionPrompt'];
   parentCostTracker?: CostTracker;
+  diffInterceptor?: DiffInterceptor;
 }
 
 export class SubagentContext {
@@ -45,6 +47,7 @@ export class SubagentContext {
   private readonly onInfo?: SubagentContextOptions['onInfo'];
   private readonly onPermissionPrompt?: SubagentContextOptions['onPermissionPrompt'];
   private readonly loadedSkills: LoadedSkill[];
+  private readonly diffInterceptor?: DiffInterceptor;
 
   constructor(options: SubagentContextOptions) {
     this.id = options.id;
@@ -61,6 +64,7 @@ export class SubagentContext {
     this.onPermissionPrompt = options.onPermissionPrompt;
     this.loadedSkills = [...(options.loadedSkills ?? [])];
     this.cwd = options.cwd;
+    this.diffInterceptor = options.diffInterceptor;
     this.costTracker = new CostTracker((entry) => {
       options.parentCostTracker?.recordEntry(entry);
     });
@@ -86,6 +90,7 @@ export class SubagentContext {
         orchestrator: this.orchestrator,
         agentId: this.id,
         depth: this.depth,
+        diffInterceptor: this.diffInterceptor,
       });
       const systemPrompt = appendContextText(
         buildSubagentSystemPrompt(
