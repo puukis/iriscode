@@ -13,16 +13,32 @@ import { GlobTool } from '../tools/search/glob.ts';
 import { GrepTool } from '../tools/search/grep.ts';
 import { PermissionsEngine } from '../permissions/engine.ts';
 import { runAgentLoop } from '../agent/loop.ts';
+import { costTracker } from '../cost/tracker.ts';
 import { logger } from '../shared/logger.ts';
 import type { Message } from '../shared/types.ts';
+import { runModelsCommand } from './commands/models.ts';
+import { runCostCommand } from './commands/cost.ts';
 
 // ---------- Parse CLI args ----------
 const args = process.argv.slice(2);
+const subcommand = args[0];
+
 let modelOverride: string | undefined;
 for (let i = 0; i < args.length; i++) {
   if ((args[i] === '--model' || args[i] === '-m') && args[i + 1]) {
     modelOverride = args[++i];
   }
+}
+
+// ---------- Subcommand dispatch ----------
+if (subcommand === 'models') {
+  await runModelsCommand();
+  process.exit(0);
+}
+
+if (subcommand === 'cost') {
+  runCostCommand();
+  process.exit(0);
 }
 
 // ---------- Bootstrap ----------
@@ -56,6 +72,7 @@ function App({ modelLabel }: { modelLabel: string }) {
     { role: 'system', text: `IrisCode — model: ${modelLabel}` },
   ]);
   const [running, setRunning] = useState(false);
+  const [sessionCost, setSessionCost] = useState(0);
   const historyRef = useRef<Message[]>([]);
 
   const handleSubmit = useCallback(
@@ -78,22 +95,29 @@ function App({ modelLabel }: { modelLabel: string }) {
         const permissions = new PermissionsEngine('default');
 
         let assistantOutput = '';
-        await runAgentLoop(historyRef.current, {
+        const result = await runAgentLoop(historyRef.current, {
           adapter,
           tools,
           permissions,
           maxIterations: 10,
+          systemPrompt:
+            'You are a helpful coding assistant. Only use tools (read_file, write_file, edit_file, bash, glob, grep) when the user explicitly asks you to interact with files or run commands. For conversational messages, respond with plain text only.',
           onText: (text) => {
             assistantOutput += text;
           },
-          onToolRequest: async (toolName) => {
+          onToolRequest: async (toolName, input) => {
+            const preview = JSON.stringify(input).slice(0, 80);
             setMessages((prev) => [
               ...prev,
-              { role: 'system', text: `[Requesting permission: ${toolName}]` },
+              { role: 'system', text: `[Tool: ${toolName} — ${preview}]` },
             ]);
-            return true; // auto-approve in CLI for now
+            return true;
           },
         });
+
+        // Track cost
+        costTracker.add(provider, modelId, result.totalInputTokens, result.totalOutputTokens);
+        setSessionCost(costTracker.total().costUsd);
 
         setMessages((prev) => [...prev, { role: 'assistant', text: assistantOutput }]);
       } catch (err) {
@@ -122,14 +146,21 @@ function App({ modelLabel }: { modelLabel: string }) {
       {running ? (
         <Text color="gray">thinking...</Text>
       ) : (
-        <Box>
-          <Text color="cyan" bold>{'> '}</Text>
-          <TextInput
-            value={input}
-            onChange={setInput}
-            onSubmit={handleSubmit}
-            placeholder="Ask anything..."
-          />
+        <Box flexDirection="column">
+          <Box>
+            <Text color="cyan" bold>{'> '}</Text>
+            <TextInput
+              value={input}
+              onChange={setInput}
+              onSubmit={handleSubmit}
+              placeholder="Ask anything..."
+            />
+          </Box>
+          {sessionCost > 0 && (
+            <Text color="gray" dimColor>
+              {`  session cost: $${sessionCost.toFixed(6)}`}
+            </Text>
+          )}
         </Box>
       )}
     </Box>

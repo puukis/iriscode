@@ -3,22 +3,28 @@ import { resolve } from 'path';
 
 export interface IrisConfig {
   anthropicApiKey?: string;
+  openaiApiKey?: string;
+  googleApiKey?: string;
+  groqApiKey?: string;
+  mistralApiKey?: string;
+  deepseekApiKey?: string;
+  xaiApiKey?: string;
+  perplexityApiKey?: string;
+  togetherApiKey?: string;
+  fireworksApiKey?: string;
+  cohereApiKey?: string;
+  openrouterApiKey?: string;
   ollamaBaseUrl?: string;
   defaultModel: string;
   logLevel: string;
 }
 
-/**
- * Load .env file from the given path if it exists.
- * Parses KEY=VALUE lines, ignoring comments and blank lines.
- * Does NOT override existing process.env values.
- */
 function loadDotEnv(envPath: string): void {
   let content: string;
   try {
     content = readFileSync(envPath, 'utf-8');
   } catch {
-    return; // file doesn't exist — skip
+    return;
   }
 
   for (const line of content.split('\n')) {
@@ -34,18 +40,24 @@ function loadDotEnv(envPath: string): void {
   }
 }
 
-/**
- * Load configuration from environment variables and .env file.
- * Looks for .env in cwd, then in the directory containing the entry point.
- */
 export function loadConfig(): IrisConfig {
-  // Try to load .env from cwd
   loadDotEnv(resolve(process.cwd(), '.env'));
 
   return {
-    anthropicApiKey: process.env.ANTHROPIC_API_KEY,
-    ollamaBaseUrl: process.env.OLLAMA_BASE_URL,
-    defaultModel: process.env.IRISCODE_DEFAULT_MODEL ?? 'anthropic/claude-sonnet-4-6',
-    logLevel: process.env.LOG_LEVEL ?? 'warn',
+    anthropicApiKey:  process.env.ANTHROPIC_API_KEY,
+    openaiApiKey:     process.env.OPENAI_API_KEY,
+    googleApiKey:     process.env.GOOGLE_API_KEY,
+    groqApiKey:       process.env.GROQ_API_KEY,
+    mistralApiKey:    process.env.MISTRAL_API_KEY,
+    deepseekApiKey:   process.env.DEEPSEEK_API_KEY,
+    xaiApiKey:        process.env.XAI_API_KEY,
+    perplexityApiKey: process.env.PERPLEXITY_API_KEY,
+    togetherApiKey:   process.env.TOGETHER_API_KEY,
+    fireworksApiKey:  process.env.FIREWORKS_API_KEY,
+    cohereApiKey:     process.env.COHERE_API_KEY,
+    openrouterApiKey: process.env.OPENROUTER_API_KEY,
+    ollamaBaseUrl:    process.env.OLLAMA_BASE_URL,
+    defaultModel:     process.env.IRISCODE_DEFAULT_MODEL ?? 'anthropic/claude-sonnet-4-6',
+    logLevel:         process.env.LOG_LEVEL ?? 'warn',
   };
 }

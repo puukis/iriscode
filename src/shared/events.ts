@@ -7,6 +7,13 @@ export interface IrisEvents {
   'tool:start': { name: string };
   'tool:end': { name: string; durationMs: number };
   'tool:error': { name: string; error: string };
+  'cost:update': {
+    provider: string;
+    model: string;
+    inputTokens: number;
+    outputTokens: number;
+    totalCostUsd: number;
+  };
 }
 
 type EventHandler<T> = (payload: T) => void;
