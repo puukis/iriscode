@@ -4,7 +4,8 @@ import { runSubagentTask } from '../../agent/orchestrator.ts';
 import { loadConfig } from '../../config/loader.ts';
 import { costTracker } from '../../cost/tracker.ts';
 import { createDefaultRegistry as createModelRegistry, parseModelString } from '../../models/registry.ts';
-import { PermissionsEngine } from '../../permissions/engine.ts';
+import { PermissionEngine } from '../../permissions/engine.ts';
+import type { PermissionMode } from '../../permissions/types.ts';
 import { bus } from '../../shared/events.ts';
 import type { Message } from '../../shared/types.ts';
 import {
@@ -15,16 +16,18 @@ import {
 
 export interface RunCommandOptions {
   modelOverride?: string;
+  modeOverride?: PermissionMode;
 }
 
 export async function runRunCommand(args: string[], options: RunCommandOptions = {}): Promise<void> {
   const parsed = parseRunArgs(args);
   if (!parsed.prompt) {
-    throw new Error('Usage: iriscode run "prompt" [--model provider/model] [--json] [--no-tools]');
+    throw new Error('Usage: iriscode run "prompt" [--model provider/model] [--mode default|acceptEdits|plan] [--json] [--no-tools]');
   }
 
   const config = loadConfig();
   const modelKey = normalizeModelKey(options.modelOverride ?? config.defaultModel);
+  const permissionMode = options.modeOverride ?? parsed.mode ?? config.mode ?? 'default';
 
   costTracker.reset();
 
@@ -35,7 +38,7 @@ export async function runRunCommand(args: string[], options: RunCommandOptions =
 
   const adapter = modelRegistry.get(modelKey);
   const tools = parsed.noTools ? new ToolRegistry() : createToolRegistry({ currentModel: modelKey });
-  const permissions = new PermissionsEngine('default');
+  const permissions = new PermissionEngine(permissionMode, process.cwd());
   const history: Message[] = [{ role: 'user', content: parsed.prompt }];
   const loadedSkills: LoadedSkill[] = [];
   const systemPrompt = buildDefaultSystemPrompt(
@@ -66,11 +69,11 @@ export async function runRunCommand(args: string[], options: RunCommandOptions =
               {
                 currentModel: modelKey,
                 modelRegistry,
-                permissionMode: permissions.getMode(),
+                permissions,
                 cwd: process.cwd(),
                 costTracker,
                 loadedSkills,
-                onToolRequest: async () => true,
+                onInfo: (text) => writeAuxiliaryOutput(text, parsed.json),
               },
               model,
             ),
@@ -82,11 +85,12 @@ export async function runRunCommand(args: string[], options: RunCommandOptions =
           process.stdout.write(text);
         }
       },
-      onToolRequest: async (toolName, input) => {
+      onInfo: (text) => writeAuxiliaryOutput(text, parsed.json),
+      onPermissionPrompt: async (request) => {
         if (parsed.json) {
-          writeJsonLine({ type: 'tool_call', name: toolName, input });
+          writeJsonLine({ type: 'permission_prompt', toolName: request.toolName, input: request.input });
         }
-        return true;
+        return 'deny-once';
       },
     });
 
@@ -117,10 +121,11 @@ export async function runRunCommand(args: string[], options: RunCommandOptions =
   }
 }
 
-function parseRunArgs(args: string[]): { prompt: string; json: boolean; noTools: boolean } {
+function parseRunArgs(args: string[]): { prompt: string; json: boolean; noTools: boolean; mode?: PermissionMode } {
   const promptParts: string[] = [];
   let json = false;
   let noTools = false;
+  let mode: PermissionMode | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -136,6 +141,13 @@ function parseRunArgs(args: string[]): { prompt: string; json: boolean; noTools:
       i += 1;
       continue;
     }
+    if (arg === '--mode' && args[i + 1]) {
+      const value = args[++i];
+      if (value === 'default' || value === 'acceptEdits' || value === 'plan') {
+        mode = value;
+      }
+      continue;
+    }
     promptParts.push(arg);
   }
 
@@ -143,6 +155,7 @@ function parseRunArgs(args: string[]): { prompt: string; json: boolean; noTools:
     prompt: promptParts.join(' ').trim(),
     json,
     noTools,
+    mode,
   };
 }
 
@@ -163,6 +176,14 @@ function attachJsonlEventStream(): Array<() => void> {
       writeJsonLine({ type: 'agent_done', depth, model, description, response }),
     ),
   ];
+}
+
+function writeAuxiliaryOutput(text: string, json: boolean): void {
+  if (json) {
+    writeJsonLine({ type: 'info', text });
+  } else {
+    process.stdout.write(`${text}\n`);
+  }
 }
 
 function writeJsonLine(value: unknown): void {

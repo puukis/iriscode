@@ -47,7 +47,15 @@ export function cleanupDir(path: string): void {
 export async function withEnv(
   values: Record<string, string | undefined>,
   fn: () => Promise<void>,
-): Promise<void> {
+): Promise<void>;
+export async function withEnv<T>(
+  values: Record<string, string | undefined>,
+  fn: () => Promise<T>,
+): Promise<T>;
+export async function withEnv<T>(
+  values: Record<string, string | undefined>,
+  fn: () => Promise<T>,
+): Promise<T> {
   const previous = new Map<string, string | undefined>();
 
   for (const [key, value] of Object.entries(values)) {
@@ -60,7 +68,7 @@ export async function withEnv(
   }
 
   try {
-    await fn();
+    return await fn();
   } finally {
     for (const [key, value] of previous) {
       if (value === undefined) {
@@ -75,24 +83,34 @@ export async function withEnv(
 export async function withMockFetch(
   mock: typeof fetch,
   fn: () => Promise<void>,
-): Promise<void> {
+): Promise<void>;
+export async function withMockFetch<T>(
+  mock: typeof fetch,
+  fn: () => Promise<T>,
+): Promise<T>;
+export async function withMockFetch<T>(
+  mock: typeof fetch,
+  fn: () => Promise<T>,
+): Promise<T> {
   const globalObject = globalThis as typeof globalThis & { fetch: typeof fetch };
   const originalFetch = globalObject.fetch;
   globalObject.fetch = mock;
 
   try {
-    await fn();
+    return await fn();
   } finally {
     globalObject.fetch = originalFetch;
   }
 }
 
-export async function withCwd(path: string, fn: () => Promise<void>): Promise<void> {
+export async function withCwd(path: string, fn: () => Promise<void>): Promise<void>;
+export async function withCwd<T>(path: string, fn: () => Promise<T>): Promise<T>;
+export async function withCwd<T>(path: string, fn: () => Promise<T>): Promise<T> {
   const originalCwd = process.cwd();
   process.chdir(path);
 
   try {
-    await fn();
+    return await fn();
   } finally {
     process.chdir(originalCwd);
   }
@@ -175,6 +193,8 @@ export function makeToolContext(overrides: Partial<ToolExecutionContext> = {}): 
     modelRegistry.register(`${adapter.provider}/${adapter.modelId}`, adapter);
   }
 
+  const permissions = overrides.permissions ?? createTestPermissionsEngine(overrides.cwd ?? process.cwd());
+
   return {
     history: overrides.history ?? [],
     cwd: overrides.cwd ?? process.cwd(),
@@ -182,7 +202,7 @@ export function makeToolContext(overrides: Partial<ToolExecutionContext> = {}): 
     adapter,
     modelRegistry,
     registry,
-    permissions: overrides.permissions ?? new PermissionsEngine('acceptAll'),
+    permissions,
     loadedSkills: overrides.loadedSkills ?? [],
     subagentDepth: overrides.subagentDepth ?? 0,
     baseSystemPrompt: overrides.baseSystemPrompt,
@@ -226,4 +246,21 @@ export function makeJsonStreamResponse(chunks: string[]): Response {
     }),
     { status: 200 },
   );
+}
+
+function createTestPermissionsEngine(_cwd: string): PermissionsEngine {
+  const originalHome = process.env.HOME;
+  const tempHome = makeTempDir('iriscode-test-home-');
+  const tempProject = makeTempDir('iriscode-test-project-');
+  process.env.HOME = tempHome;
+
+  try {
+    return new PermissionsEngine('default', tempProject);
+  } finally {
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+  }
 }

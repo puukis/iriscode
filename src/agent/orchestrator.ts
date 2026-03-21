@@ -4,13 +4,14 @@ import { createDefaultRegistry, type LoadedSkill } from '../tools/index.ts';
 import { bus } from '../shared/events.ts';
 import { ToolError } from '../shared/errors.ts';
 import { parseModelString, type ModelRegistry } from '../models/registry.ts';
-import { PermissionsEngine } from '../permissions/engine.ts';
-import type { PermissionMode } from '../shared/types.ts';
+import { PermissionEngine } from '../permissions/engine.ts';
+import type { PermissionMode } from '../permissions/types.ts';
 import type { CostTracker } from '../cost/tracker.ts';
 
 export interface RunSubagentTaskOptions {
   currentModel: string;
   modelRegistry: ModelRegistry;
+  permissions?: PermissionEngine;
   permissionMode?: PermissionMode;
   baseSystemPrompt?: string;
   maxIterations?: number;
@@ -19,7 +20,9 @@ export interface RunSubagentTaskOptions {
   costTracker?: CostTracker;
   loadedSkills?: LoadedSkill[];
   subagentDepth?: number;
-  onToolRequest?: AgentLoopOptions['onToolRequest'];
+  sessionId?: string;
+  onInfo?: AgentLoopOptions['onInfo'];
+  onPermissionPrompt?: AgentLoopOptions['onPermissionPrompt'];
 }
 
 export async function runSubagentTask(
@@ -40,6 +43,8 @@ export async function runSubagentTask(
   const adapter = options.modelRegistry.get(modelKey);
   const loadedSkills = [...(options.loadedSkills ?? [])];
   const tools = createDefaultRegistry({ currentModel: modelKey });
+  const permissions =
+    options.permissions ?? new PermissionEngine(options.permissionMode ?? 'default', options.cwd);
   const systemPrompt =
     options.baseSystemPrompt ??
     buildDefaultSystemPrompt(true, tools.getDefinitions().map((tool) => tool.name));
@@ -55,7 +60,7 @@ export async function runSubagentTask(
     const result = await runAgentLoop(history, {
       adapter,
       tools,
-      permissions: new PermissionsEngine(options.permissionMode ?? 'default'),
+      permissions,
       systemPrompt,
       maxIterations: options.maxIterations ?? 10,
       modelRegistry: options.modelRegistry,
@@ -64,18 +69,21 @@ export async function runSubagentTask(
       costTracker: options.costTracker,
       loadedSkills,
       subagentDepth: nextDepth,
+      sessionId: options.sessionId,
       runSubagent: (nestedDescription, nestedModel) =>
         runSubagentTask(
           nestedDescription,
           {
             ...options,
             currentModel: modelKey,
+            permissions,
             loadedSkills,
             subagentDepth: nextDepth,
           },
           nestedModel,
         ),
-      onToolRequest: options.onToolRequest,
+      onInfo: options.onInfo,
+      onPermissionPrompt: options.onPermissionPrompt,
     });
 
     const { provider, modelId } = parseModelString(modelKey);

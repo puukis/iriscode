@@ -28,8 +28,7 @@ export interface SessionState {
   totalInputTokens: number;
   totalOutputTokens: number;
 }
-
-export type PermissionMode = 'default' | 'acceptAll' | 'rejectAll';
+export type { PermissionMode } from '../permissions/types.ts';
 
 export interface DiffResult {
   filePath: string;

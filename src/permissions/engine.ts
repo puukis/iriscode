@@ -1,42 +1,85 @@
-import type { PermissionMode } from '../shared/types.ts';
-import { PermissionDeniedError } from '../shared/errors.ts';
+import { addProjectAllowedTool, addProjectBlockedTool } from '../config/project.ts';
+import { AllowedList } from './allowed-list.ts';
+import { BlockedList } from './blocked-list.ts';
+import { isEditTool } from './modes.ts';
+import { resolveRules } from './tiers.ts';
+import type {
+  PermissionMode,
+  PermissionRequest,
+  PermissionResult,
+  PermissionTier,
+  ToolPattern,
+} from './types.ts';
 
-/**
- * Tools that are always allowed regardless of mode.
- */
-const ALWAYS_ALLOWED = new Set([
-  'read',
-  'read_file',
-  'glob',
-  'grep',
-  'web-search',
-  'web-fetch',
-  'git-status',
-  'git-diff',
-  'tool-search',
-  'skill',
-]);
-
-/**
- * Tools that require explicit approval in 'default' mode.
- */
-const REQUIRES_APPROVAL = new Set([
-  'write',
-  'write_file',
-  'edit',
-  'edit_file',
-  'bash',
-  'git-commit',
-  'task',
-  'ask-user',
-  'todo-write',
-]);
-
-export class PermissionsEngine {
+export class PermissionEngine {
   private mode: PermissionMode;
+  private readonly cwd: string;
+  private readonly allowedList: AllowedList;
+  private readonly blockedList: BlockedList;
 
-  constructor(mode: PermissionMode = 'default') {
+  constructor(mode: PermissionMode = 'default', cwd: string = process.cwd()) {
+    const rules = resolveRules(cwd);
     this.mode = mode;
+    this.cwd = cwd;
+    this.allowedList = new AllowedList(cwd, rules);
+    this.blockedList = new BlockedList(cwd, rules);
+  }
+
+  async check(request: PermissionRequest): Promise<PermissionResult> {
+    return this.checkSync(request);
+  }
+
+  checkSync(request: PermissionRequest): PermissionResult {
+    const blockedRule = this.blockedList.match(request);
+    if (blockedRule) {
+      return {
+        decision: 'deny',
+        rule: blockedRule,
+        reason: blockedRule.reason ?? `Tool "${request.toolName}" is blocked by configuration.`,
+      };
+    }
+
+    const allowedRule = this.allowedList.match(request);
+    if (allowedRule) {
+      return {
+        decision: 'allow',
+        rule: allowedRule,
+        reason: allowedRule.reason ?? `Tool "${request.toolName}" is on the allowlist.`,
+      };
+    }
+
+    if (this.mode === 'plan') {
+      return {
+        decision: 'allow',
+        reason: 'Plan mode is active. The agent loop will convert this tool call into a dry run.',
+      };
+    }
+
+    if (this.mode === 'acceptEdits' && isEditTool(request.toolName)) {
+      return {
+        decision: 'allow',
+        reason: 'acceptEdits mode auto-approves write and edit tools.',
+      };
+    }
+
+    return {
+      decision: 'prompt',
+      reason: `Tool "${request.toolName}" requires approval.`,
+    };
+  }
+
+  addAllowed(pattern: ToolPattern, tier: PermissionTier): void {
+    this.allowedList.add(pattern, tier);
+    if (tier === 'project') {
+      addProjectAllowedTool(this.cwd, pattern);
+    }
+  }
+
+  addBlocked(pattern: ToolPattern, tier: PermissionTier): void {
+    this.blockedList.add(pattern, tier);
+    if (tier === 'project') {
+      addProjectBlockedTool(this.cwd, pattern);
+    }
   }
 
   getMode(): PermissionMode {
@@ -46,43 +89,6 @@ export class PermissionsEngine {
   setMode(mode: PermissionMode): void {
     this.mode = mode;
   }
-
-  /**
-   * Check whether a tool execution is permitted.
-   * Throws PermissionDeniedError if denied.
-   * Returns true if allowed automatically (no prompt needed).
-   * Returns false if the tool requires a user prompt (caller must ask).
-   */
-  check(toolName: string): boolean {
-    if (this.mode === 'rejectAll') {
-      throw new PermissionDeniedError(toolName);
-    }
-
-    if (this.mode === 'acceptAll') {
-      return true;
-    }
-
-    // default mode
-    if (ALWAYS_ALLOWED.has(toolName)) {
-      return true;
-    }
-
-    if (REQUIRES_APPROVAL.has(toolName)) {
-      return false; // caller must prompt the user
-    }
-
-    // Unknown tools require approval in default mode
-    return false;
-  }
-
-  /**
-   * Convenience: throw if the tool is not allowed, handling the "needs prompt" case
-   * as auto-denied (useful in non-interactive contexts).
-   */
-  checkOrThrow(toolName: string): void {
-    const allowed = this.check(toolName);
-    if (!allowed) {
-      throw new PermissionDeniedError(toolName);
-    }
-  }
 }
+
+export { PermissionEngine as PermissionsEngine };

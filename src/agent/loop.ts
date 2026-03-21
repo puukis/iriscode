@@ -1,12 +1,17 @@
 import type { BaseAdapter } from '../models/base-adapter.ts';
 import type { ModelRegistry } from '../models/registry.ts';
 import type { PermissionsEngine } from '../permissions/engine.ts';
+import { derivePersistentToolPattern } from '../permissions/matcher.ts';
+import { canExecuteInPlanMode } from '../permissions/modes.ts';
+import type { PermissionRequest, PermissionResult } from '../permissions/types.ts';
 import type { CostTracker } from '../cost/tracker.ts';
-import type { Message, ContentBlock } from '../shared/types.ts';
+import type { Message, ContentBlock, ToolDefinitionSchema } from '../shared/types.ts';
 import { ToolError } from '../shared/errors.ts';
 import { bus } from '../shared/events.ts';
 import { logger } from '../shared/logger.ts';
 import type { LoadedSkill, ToolExecutionContext, ToolRegistry } from '../tools/index.ts';
+
+export type ToolPermissionChoice = 'allow-once' | 'allow-always' | 'deny-once' | 'deny-always';
 
 export interface AgentLoopOptions {
   adapter: BaseAdapter;
@@ -22,10 +27,14 @@ export interface AgentLoopOptions {
   costTracker?: CostTracker;
   loadedSkills?: LoadedSkill[];
   subagentDepth?: number;
-  /** Called when the agent produces text output */
+  sessionId?: string;
   onText?: (text: string) => void;
-  /** Called before a tool executes — return false to deny */
-  onToolRequest?: (toolName: string, input: Record<string, unknown>) => Promise<boolean>;
+  onInfo?: (text: string) => void;
+  onPermissionPrompt?: (
+    request: PermissionRequest,
+    result: PermissionResult,
+    tool?: ToolDefinitionSchema,
+  ) => Promise<ToolPermissionChoice>;
 }
 
 export interface AgentLoopResult {
@@ -33,14 +42,9 @@ export interface AgentLoopResult {
   totalInputTokens: number;
   totalOutputTokens: number;
   iterations: number;
+  plannedToolCalls: Array<{ name: string; input: Record<string, unknown> }>;
 }
 
-/**
- * Run the agentic loop: stream from the model, handle tool calls,
- * and continue until the model stops requesting tools or maxIterations is hit.
- *
- * @param history - Mutable message history; this function appends to it in place.
- */
 export async function runAgentLoop(
   history: Message[],
   options: AgentLoopOptions,
@@ -59,14 +63,17 @@ export async function runAgentLoop(
     costTracker,
     loadedSkills = [],
     subagentDepth = 0,
+    sessionId = globalThis.crypto?.randomUUID?.() ?? `session-${Date.now()}`,
     onText,
-    onToolRequest,
+    onInfo,
+    onPermissionPrompt,
   } = options;
 
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let iterations = 0;
   let finalText = '';
+  const plannedToolCalls: Array<{ name: string; input: Record<string, unknown> }> = [];
 
   bus.emit('session:start', { model: `${adapter.provider}/${adapter.modelId}` });
 
@@ -86,7 +93,6 @@ export async function runAgentLoop(
       let assistantText = '';
       const toolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }> = [];
 
-      // Stream the model response
       for await (const event of adapter.stream(streamParams)) {
         if (event.type === 'text') {
           assistantText += event.text ?? '';
@@ -102,7 +108,6 @@ export async function runAgentLoop(
         }
       }
 
-      // Build assistant message content
       const assistantContent: ContentBlock[] = [];
       if (assistantText) {
         assistantContent.push({ type: 'text', text: assistantText });
@@ -112,7 +117,6 @@ export async function runAgentLoop(
       }
       history.push({ role: 'assistant', content: assistantContent });
 
-      // If no tool calls, we're done
       if (toolCalls.length === 0) {
         if (!assistantText) {
           finalText = finalText || getMostRecentToolResultFallback(history) || '';
@@ -120,51 +124,83 @@ export async function runAgentLoop(
         break;
       }
 
-      // Execute tool calls
       const toolResults: ContentBlock[] = [];
       for (const tc of toolCalls) {
         bus.emit('tool:start', { name: tc.name });
         const startMs = Date.now();
 
-        let resultContent: string;
+        let resultContent = '';
         let isError = false;
 
         try {
-          // Check permissions
-          const autoApproved = permissions.check(tc.name);
-          if (!autoApproved) {
-            const approved = onToolRequest
-              ? await onToolRequest(tc.name, tc.input)
-              : false;
-            if (!approved) {
-              throw new ToolError(`User denied permission for tool "${tc.name}"`, tc.name);
-            }
-          }
-
-          const tool = tools.get(tc.name);
-          if (!tool) {
-            throw new ToolError(`Unknown tool: "${tc.name}"`, tc.name);
-          }
-
-          logger.debug(`Executing tool: ${tc.name}`, JSON.stringify(tc.input));
-          const toolContext: ToolExecutionContext = {
-            history,
-            cwd,
-            model: `${adapter.provider}/${adapter.modelId}`,
-            adapter,
-            modelRegistry,
-            registry: tools,
-            permissions,
-            loadedSkills,
-            subagentDepth,
-            baseSystemPrompt: systemPrompt,
-            askUser,
-            runSubagent,
-            costTracker,
+          const request: PermissionRequest = {
+            toolName: tc.name,
+            input: tc.input,
+            sessionId,
           };
-          const toolResult = await tool.execute(tc.input, toolContext);
-          resultContent = toolResult.content;
-          isError = toolResult.isError === true;
+          const permission = await permissions.check(request);
+          const tool = tools.get(tc.name);
+          const toolDefinition = toolDefs.find((definition) => definition.name === tc.name);
+
+          if (permission.decision === 'deny') {
+            isError = true;
+            resultContent = formatDeniedToolResult(tc.name, permission.reason);
+          } else if (permission.decision === 'prompt') {
+            const choice = onPermissionPrompt
+              ? await onPermissionPrompt(request, permission, toolDefinition)
+              : 'deny-once';
+            const persistedPattern = derivePersistentToolPattern(request);
+
+            if (choice === 'allow-always') {
+              permissions.addAllowed(persistedPattern, 'project');
+            } else if (choice === 'deny-always') {
+              permissions.addBlocked(persistedPattern, 'project');
+            }
+
+            if (choice === 'deny-once' || choice === 'deny-always') {
+              isError = true;
+              resultContent = formatDeniedToolResult(
+                tc.name,
+                'The user denied this tool request.',
+              );
+            } else {
+              ({ resultContent, isError } = await executeToolOrDryRun(
+                tc,
+                tool,
+                permissions,
+                history,
+                cwd,
+                adapter,
+                modelRegistry,
+                tools,
+                loadedSkills,
+                subagentDepth,
+                systemPrompt,
+                askUser,
+                runSubagent,
+                costTracker,
+                plannedToolCalls,
+              ));
+            }
+          } else {
+            ({ resultContent, isError } = await executeToolOrDryRun(
+              tc,
+              tool,
+              permissions,
+              history,
+              cwd,
+              adapter,
+              modelRegistry,
+              tools,
+              loadedSkills,
+              subagentDepth,
+              systemPrompt,
+              askUser,
+              runSubagent,
+              costTracker,
+              plannedToolCalls,
+            ));
+          }
 
           if (isError) {
             bus.emit('tool:error', { name: tc.name, error: resultContent });
@@ -181,13 +217,14 @@ export async function runAgentLoop(
         const toolResult: Extract<ContentBlock, { type: 'tool_result' }> = {
           type: 'tool_result',
           tool_use_id: tc.id,
-          content: resultContent!,
+          content: resultContent,
         };
-        if (isError) toolResult.is_error = true;
+        if (isError) {
+          toolResult.is_error = true;
+        }
         toolResults.push(toolResult);
       }
 
-      // Add tool results as a user message
       history.push({ role: 'user', content: toolResults });
     }
 
@@ -198,7 +235,92 @@ export async function runAgentLoop(
     bus.emit('session:end', { totalInputTokens, totalOutputTokens });
   }
 
-  return { finalText, totalInputTokens, totalOutputTokens, iterations };
+  if (permissions.getMode() === 'plan' && plannedToolCalls.length > 0) {
+    const summary = formatPlanSummary(plannedToolCalls);
+    onInfo?.(summary);
+
+    if (askUser) {
+      const answer = await askUser('Switch to default mode and execute this plan? (y/n)');
+      if (isAffirmative(answer)) {
+        onInfo?.('Plan approved. Switching to default mode and executing the last user request.');
+        permissions.setMode('default');
+
+        const lastUserMessage = getLastUserMessageText(history);
+        if (lastUserMessage) {
+          const rerunHistory: Message[] = [{ role: 'user', content: lastUserMessage }];
+          const rerunResult = await runAgentLoop(rerunHistory, {
+            ...options,
+            permissions,
+            sessionId,
+          });
+
+          history.splice(0, history.length, ...rerunHistory);
+          return {
+            finalText: rerunResult.finalText,
+            totalInputTokens: totalInputTokens + rerunResult.totalInputTokens,
+            totalOutputTokens: totalOutputTokens + rerunResult.totalOutputTokens,
+            iterations: iterations + rerunResult.iterations,
+            plannedToolCalls,
+          };
+        }
+      }
+    }
+  }
+
+  return { finalText, totalInputTokens, totalOutputTokens, iterations, plannedToolCalls };
+}
+
+async function executeToolOrDryRun(
+  toolCall: { id: string; name: string; input: Record<string, unknown> },
+  tool: ReturnType<ToolRegistry['get']>,
+  permissions: PermissionsEngine,
+  history: Message[],
+  cwd: string,
+  adapter: BaseAdapter,
+  modelRegistry: ModelRegistry,
+  tools: ToolRegistry,
+  loadedSkills: LoadedSkill[],
+  subagentDepth: number,
+  systemPrompt: string | undefined,
+  askUser: AgentLoopOptions['askUser'],
+  runSubagent: AgentLoopOptions['runSubagent'],
+  costTracker: AgentLoopOptions['costTracker'],
+  plannedToolCalls: AgentLoopResult['plannedToolCalls'],
+): Promise<{ resultContent: string; isError: boolean }> {
+  if (permissions.getMode() === 'plan' && !canExecuteInPlanMode(toolCall.name)) {
+    plannedToolCalls.push({ name: toolCall.name, input: toolCall.input });
+    return {
+      resultContent: formatPlanModeToolResult(toolCall.name, toolCall.input),
+      isError: false,
+    };
+  }
+
+  if (!tool) {
+    throw new ToolError(`Unknown tool: "${toolCall.name}"`, toolCall.name);
+  }
+
+  logger.debug(`Executing tool: ${toolCall.name}`, JSON.stringify(toolCall.input));
+  const toolContext: ToolExecutionContext = {
+    history,
+    cwd,
+    model: `${adapter.provider}/${adapter.modelId}`,
+    adapter,
+    modelRegistry,
+    registry: tools,
+    permissions,
+    loadedSkills,
+    subagentDepth,
+    baseSystemPrompt: systemPrompt,
+    askUser,
+    runSubagent,
+    costTracker,
+  };
+
+  const toolResult = await tool.execute(toolCall.input, toolContext);
+  return {
+    resultContent: toolResult.content,
+    isError: toolResult.isError === true,
+  };
 }
 
 function composeSystemPrompt(basePrompt: string | undefined, loadedSkills: LoadedSkill[]): string | undefined {
@@ -216,10 +338,14 @@ function composeSystemPrompt(basePrompt: string | undefined, loadedSkills: Loade
 function getMostRecentToolResultFallback(history: Message[]): string | undefined {
   for (let index = history.length - 1; index >= 0; index--) {
     const message = history[index];
-    if (typeof message.content === 'string') continue;
+    if (typeof message.content === 'string') {
+      continue;
+    }
 
     const toolResults = message.content.filter((block) => block.type === 'tool_result');
-    if (toolResults.length === 0) continue;
+    if (toolResults.length === 0) {
+      continue;
+    }
 
     const content = toolResults
       .map((block) => block.content.trim())
@@ -228,6 +354,53 @@ function getMostRecentToolResultFallback(history: Message[]): string | undefined
 
     if (content) {
       return content;
+    }
+  }
+
+  return undefined;
+}
+
+function formatDeniedToolResult(toolName: string, reason: string): string {
+  return `Tool '${toolName}' was denied. Reason: ${reason}. Please find an alternative approach.`;
+}
+
+function formatPlanModeToolResult(toolName: string, input: Record<string, unknown>): string {
+  return `[PLAN MODE] Would execute ${toolName} with:\n${JSON.stringify(input, null, 2)}`;
+}
+
+function formatPlanSummary(plannedToolCalls: AgentLoopResult['plannedToolCalls']): string {
+  const lines = ['[PLAN MODE] Planned tool calls:'];
+
+  plannedToolCalls.forEach((plannedCall, index) => {
+    lines.push(`${index + 1}. ${plannedCall.name}`);
+    lines.push(JSON.stringify(plannedCall.input, null, 2));
+  });
+
+  return lines.join('\n');
+}
+
+function isAffirmative(value: string): boolean {
+  return /^(y|yes)$/i.test(value.trim());
+}
+
+function getLastUserMessageText(history: Message[]): string | undefined {
+  for (let index = history.length - 1; index >= 0; index--) {
+    const message = history[index];
+    if (message.role !== 'user') {
+      continue;
+    }
+
+    if (typeof message.content === 'string') {
+      return message.content;
+    }
+
+    const text = message.content
+      .filter((block) => block.type === 'text')
+      .map((block) => (block.type === 'text' ? block.text : ''))
+      .join('');
+
+    if (text) {
+      return text;
     }
   }
 
