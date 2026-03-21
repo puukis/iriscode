@@ -60,20 +60,23 @@ export async function createDefaultRegistry(): Promise<ModelRegistry> {
   for (const modelId of anthropicModels) {
     try {
       registry.register(`anthropic/${modelId}`, new AnthropicAdapter(modelId));
-    } catch {
-      // AnthropicAdapter throws ProviderError if API key missing — skip gracefully
+    } catch (err) {
+      // Only swallow missing-API-key errors; re-throw programming errors
+      if (!(err instanceof ProviderError)) throw err;
     }
   }
 
   // Register Ollama models (best-effort — skip if Ollama is not running)
   try {
-    const probe = new OllamaAdapter('probe');
+    // OllamaAdapter('__probe__') is a sentinel; only fetchModels() is called on it
+    const probe = new OllamaAdapter('__probe__');
     const ollamaModels = await probe.fetchModels();
     for (const modelId of ollamaModels) {
       registry.register(`ollama/${modelId}`, new OllamaAdapter(modelId));
     }
-  } catch {
-    // Ollama not running — skip silently
+  } catch (err) {
+    // Only swallow ProviderError (Ollama unreachable); re-throw unexpected errors
+    if (!(err instanceof ProviderError)) throw err;
   }
 
   return registry;
