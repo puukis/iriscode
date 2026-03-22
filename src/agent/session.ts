@@ -39,6 +39,7 @@ interface SessionHooks {
   onGetToolDefinitions?: (allowedTools?: string[]) => ReturnType<SessionState['getToolDefinitions']>;
   onOpenModelPicker?: () => Promise<string | undefined>;
   onOpenSessionPicker?: (sessions: SessionSnapshotSummary[]) => Promise<SessionSnapshotSummary | undefined>;
+  onOpenMemoryMenu?: () => Promise<import('../commands/types.ts').MemoryMenuAction | undefined>;
   onViewDiff?: (diff: DiffResult, options?: { readOnly?: boolean; autoAccept?: boolean }) => Promise<DiffDecision | void>;
   onRestoreSnapshot?: (snapshot: SessionSnapshot) => void;
   onRefreshContext?: () => Promise<void>;
@@ -157,6 +158,7 @@ export class Session implements SessionState {
 
   async setModel(model: string): Promise<void> {
     this.model = model;
+    bus.emit('session:model-changed', { sessionId: this.id, model });
     this.orchestrator.updateRuntime({ currentModel: model });
     await this.hooks.onSetModel?.(model);
   }
@@ -203,6 +205,10 @@ export class Session implements SessionState {
 
   async openSessionPicker(sessions: SessionSnapshotSummary[]): Promise<SessionSnapshotSummary | undefined> {
     return this.hooks.onOpenSessionPicker?.(sessions);
+  }
+
+  async openMemoryMenu(): Promise<import('../commands/types.ts').MemoryMenuAction | undefined> {
+    return this.hooks.onOpenMemoryMenu?.();
   }
 
   async viewDiff(

@@ -8,6 +8,8 @@ import type { DiffResult, Message, ToolDefinitionSchema } from '../shared/types.
 
 export type CommandCategory = 'builtin' | 'custom' | 'skill';
 
+export type MemoryMenuAction = 'clear-project' | 'clear-global' | 'edit-project' | 'edit-global';
+
 export interface CommandEntry {
   name: string;
   description: string;
@@ -79,6 +81,7 @@ export interface SessionState {
   contextText: string;
   memoryFiles: LoadedMemoryFile[];
   memoryMaxTokens: number;
+  readonly cwd: string;
   costTracker: CostTracker;
   diffStore: DiffStore;
   clear(): void;
@@ -93,6 +96,7 @@ export interface SessionState {
   getToolDefinitions(allowedTools?: string[]): ToolDefinitionSchema[];
   openModelPicker(): Promise<string | undefined>;
   openSessionPicker(sessions: SessionSnapshotSummary[]): Promise<SessionSnapshotSummary | undefined>;
+  openMemoryMenu(): Promise<MemoryMenuAction | undefined>;
   viewDiff(diff: DiffResult, options?: { readOnly?: boolean; autoAccept?: boolean }): Promise<DiffDecision | void>;
   restoreSession(snapshot: SessionSnapshot): void;
   refreshContext(): Promise<void>;
@@ -104,6 +108,8 @@ export interface CommandContext {
   config: ResolvedConfig;
   engine: PermissionEngine;
   cwd: string;
+  compactionManager?: import('../memory/compaction.ts').CompactionManager;
+  modelRegistry?: import('../models/registry.ts').ModelRegistry;
 }
 
 export type CommandResult =
