@@ -14,7 +14,23 @@ export interface IrisEvents {
   'session:start': { model: string };
   'session:end': { totalInputTokens: number; totalOutputTokens: number };
   'tool:start': { name: string };
+  'tool:call': {
+    id: string;
+    name: string;
+    input: Record<string, unknown>;
+    agentId: string;
+    startedAt: number;
+  };
   'tool:end': { name: string; durationMs: number };
+  'tool:result': {
+    id: string;
+    name: string;
+    input: Record<string, unknown>;
+    output: string;
+    isError: boolean;
+    durationMs: number;
+    agentId: string;
+  };
   'tool:error': { name: string; error: string };
   'cost:update': {
     provider: string;
@@ -37,6 +53,22 @@ export interface IrisEvents {
     agentId: string;
     depth: number;
   };
+  'memory:budget': {
+    budget: {
+      totalTokens: number;
+      status: 'ok' | 'warning' | 'exceeded';
+      message: string;
+      largestFiles: Array<{ path: string; tokens: number }>;
+    };
+  };
+  'session:compacted': {
+    tokensBefore: number;
+    tokensAfter: number;
+    source: 'prewritten' | 'generated';
+    summary: string;
+  };
+  'session:model-changed': { sessionId: string; model: string };
+  'session:message-added': { sessionId: string; role: string };
 }
 
 type EventHandler<T> = (payload: T) => void;
