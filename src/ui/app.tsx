@@ -24,6 +24,7 @@ interface AppProps {
   modelOverride?: string;
   modeOverride?: PermissionMode;
   onReady?: (sessionRef: { current: Session | null }) => void;
+  onCompactionManagerReady?: (cm: import('../memory/compaction.ts').CompactionManager, registry: import('../models/registry.ts').ModelRegistry) => void;
 }
 
 export function App(props: AppProps) {

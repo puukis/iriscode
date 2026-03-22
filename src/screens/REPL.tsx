@@ -42,6 +42,8 @@ import {
   type LoadedSkill,
 } from '../tools/index.ts';
 import { logger } from '../shared/logger.ts';
+import { CompactionManager } from '../memory/compaction.ts';
+import type { ModelRegistry } from '../models/registry.ts';
 
 interface REPLProps {
   cwd: string;
@@ -49,6 +51,7 @@ interface REPLProps {
   initialMemoryFiles: LoadedMemoryFile[];
   modelOverride?: string;
   modeOverride?: PermissionMode;
+  onCompactionManagerReady?: (cm: CompactionManager, registry: ModelRegistry) => void;
 }
 
 interface PendingPermissionPrompt {
@@ -80,6 +83,7 @@ export function REPL({
   initialMemoryFiles,
   modelOverride,
   modeOverride,
+  onCompactionManagerReady,
 }: REPLProps) {
   const iris = useIris();
   const { exit } = useApp();
@@ -112,6 +116,8 @@ export function REPL({
   const sessionCostRef = useRef(0);
   const abortControllerRef = useRef<AbortController | null>(null);
   const activeRunIdRef = useRef(0);
+  const modelRegistryRef = useRef<ModelRegistry | null>(null);
+  const compactionManagerRef = useRef<CompactionManager | null>(null);
   const commandHistory = useMemo(
     () => messages.filter((message) => message.kind === 'user-text').map((message) => message.text),
     [messages],
@@ -547,6 +553,13 @@ export function REPL({
     try {
       const modelKey = normalizeModelKey(modelOverrideForPrompt ?? activeModel);
       const modelRegistry = await createModelRegistry(config);
+      modelRegistryRef.current = modelRegistry;
+      if (!compactionManagerRef.current && iris.sessionRef.current) {
+        const cm = new CompactionManager(iris.sessionRef.current, modelRegistry);
+        cm.start();
+        compactionManagerRef.current = cm;
+        onCompactionManagerReady?.(cm, modelRegistry);
+      }
       const adapter = modelRegistry.get(modelKey);
       iris.sessionRef.current!.prepareRun(trimmed);
       iris.graphTrackerRef.current = iris.sessionRef.current!.graphTracker;
@@ -654,6 +667,8 @@ export function REPL({
       engine: iris.permissionEngineRef.current,
       cwd,
       registry: commandRegistry,
+      compactionManager: compactionManagerRef.current ?? undefined,
+      modelRegistry: modelRegistryRef.current ?? undefined,
     });
   };
   iris.runtime.cancelRef.current = () => {
@@ -866,6 +881,8 @@ export function REPL({
                 engine: iris.permissionEngineRef.current,
                 cwd,
                 registry: commandRegistry,
+                compactionManager: compactionManagerRef.current ?? undefined,
+                modelRegistry: modelRegistryRef.current ?? undefined,
               })
             : 'passthrough';
 
