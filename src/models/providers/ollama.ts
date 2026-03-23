@@ -1,6 +1,6 @@
 import { BaseAdapter, type TokenCost } from '../base-adapter.ts';
 import type { StreamEvent, StreamParams, Message } from '../../shared/types.ts';
-import { ProviderError } from '../../shared/errors.ts';
+import { ProviderError, isAbortError } from '../../shared/errors.ts';
 
 const DEFAULT_BASE_URL = 'http://localhost:11434';
 
@@ -49,7 +49,7 @@ export class OllamaAdapter extends BaseAdapter {
   }
 
   async *stream(params: StreamParams): AsyncGenerator<StreamEvent> {
-    const { messages, systemPrompt, tools, maxTokens } = params;
+    const { messages, systemPrompt, tools, maxTokens, abortSignal } = params;
 
     const ollamaMessages = historyToOllama(messages, systemPrompt);
 
@@ -78,8 +78,12 @@ export class OllamaAdapter extends BaseAdapter {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
+        signal: abortSignal,
       });
     } catch (err) {
+      if (isAbortError(err)) {
+        throw err;
+      }
       throw new ProviderError(
         `Failed to connect to Ollama at ${this.baseUrl}: ${err instanceof Error ? err.message : String(err)}`,
         'ollama',
@@ -166,6 +170,9 @@ export class OllamaAdapter extends BaseAdapter {
         outputTokens: evalTokens,
       };
     } catch (err) {
+      if (isAbortError(err)) {
+        throw err;
+      }
       if (err instanceof ProviderError) throw err;
       throw new ProviderError(
         `Ollama stream error: ${err instanceof Error ? err.message : String(err)}`,

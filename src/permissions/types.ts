@@ -2,7 +2,7 @@ export type PermissionMode = 'default' | 'acceptEdits' | 'plan';
 
 export type PermissionDecision = 'allow' | 'deny' | 'prompt';
 
-export type PermissionTier = 'project' | 'user' | 'global';
+export type PermissionTier = 'skill' | 'project' | 'user' | 'global';
 
 export type ToolPattern = string;
 

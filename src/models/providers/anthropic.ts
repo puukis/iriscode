@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { BaseAdapter, type TokenCost } from '../base-adapter.ts';
 import type { StreamEvent, StreamParams, Message, ContentBlock } from '../../shared/types.ts';
-import { ProviderError } from '../../shared/errors.ts';
+import { ProviderError, isAbortError } from '../../shared/errors.ts';
 
 // Pricing per 1M tokens
 const PRICING: Record<string, { inputPer1M: number; outputPer1M: number }> = {
@@ -35,7 +35,7 @@ export class AnthropicAdapter extends BaseAdapter {
   }
 
   async *stream(params: StreamParams): AsyncGenerator<StreamEvent> {
-    const { messages, systemPrompt, tools, maxTokens = 4096 } = params;
+    const { messages, systemPrompt, tools, maxTokens = 4096, abortSignal } = params;
 
     const anthropicMessages = historyToAnthropic(messages);
 
@@ -56,6 +56,17 @@ export class AnthropicAdapter extends BaseAdapter {
     };
 
     const streamHandle = this.client.messages.stream(streamParams);
+    const abortStream = () => {
+      streamHandle.abort();
+    };
+
+    if (abortSignal) {
+      if (abortSignal.aborted) {
+        abortStream();
+      } else {
+        abortSignal.addEventListener('abort', abortStream, { once: true });
+      }
+    }
 
     try {
       for await (const event of streamHandle) {
@@ -90,11 +101,16 @@ export class AnthropicAdapter extends BaseAdapter {
         outputTokens: final.usage.output_tokens,
       };
     } catch (err) {
+      if (isAbortError(err)) {
+        throw err;
+      }
       if (err instanceof ProviderError) throw err;
       throw new ProviderError(
         err instanceof Error ? err.message : String(err),
         'anthropic',
       );
+    } finally {
+      abortSignal?.removeEventListener('abort', abortStream);
     }
   }
 

@@ -181,4 +181,75 @@ describe('config loader', () => {
     cleanupDir(cwd);
     cleanupDir(home);
   });
+
+  test('loadConfig includes nested IRIS.md context even when the project root has no IRIS.md', async () => {
+    const cwd = makeTempDir('iriscode-loader-nested-context-');
+    const home = makeTempDir('iriscode-loader-home-');
+
+    writeFile(
+      join(cwd, 'src', 'IRIS.md'),
+      [
+        '# API layer',
+        '',
+        'Routes live here.',
+      ].join('\n'),
+    );
+
+    await withEnv({ HOME: home }, async () => {
+      resetConfigCacheForTests();
+      const config = await loadConfig(cwd);
+      expect(config.context_text).toContain('# API layer');
+      expect(config.context_text).toContain('Routes live here.');
+    });
+
+    cleanupDir(cwd);
+    cleanupDir(home);
+  });
+
+  test('loadConfig merges global and project MCP server lists by name', async () => {
+    const cwd = makeTempDir('iriscode-loader-mcp-project-');
+    const home = makeTempDir('iriscode-loader-mcp-home-');
+
+    writeFile(
+      join(home, '.iris', 'config.toml'),
+      [
+        'mcp_oauth_callback_port = 7777',
+        '',
+        '[[mcp_servers]]',
+        'name = "filesystem"',
+        'type = "stdio"',
+        'command = "npx"',
+        'args = ["-y", "@modelcontextprotocol/server-filesystem", "."]',
+      ].join('\n'),
+    );
+    writeFile(
+      join(cwd, 'IRIS.md'),
+      [
+        '# MCP',
+        '',
+        '## Config',
+        '',
+        '```yaml',
+        'mcp_servers:',
+        '  - name: github',
+        '    type: http',
+        '    url: https://example.com/mcp',
+        '    bearer_token_env_var: GITHUB_TOKEN',
+        '```',
+      ].join('\n'),
+    );
+
+    await withEnv({ HOME: home }, async () => {
+      resetConfigCacheForTests();
+      const config = await loadConfig(cwd);
+      expect(config.mcp_oauth_callback_port).toBe(7777);
+      expect(config.mcp_servers).toHaveLength(2);
+      expect(config.mcp_servers.map((server) => server.name)).toEqual(['filesystem', 'github']);
+      expect(config.mcp_servers.find((server) => server.name === 'filesystem')?.type).toBe('stdio');
+      expect(config.mcp_servers.find((server) => server.name === 'github')?.type).toBe('http');
+    });
+
+    cleanupDir(cwd);
+    cleanupDir(home);
+  });
 });

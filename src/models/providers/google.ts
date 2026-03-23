@@ -1,6 +1,6 @@
 import { BaseAdapter, type TokenCost } from '../base-adapter.ts';
 import type { StreamEvent, StreamParams, Message } from '../../shared/types.ts';
-import { ProviderError } from '../../shared/errors.ts';
+import { ProviderError, isAbortError } from '../../shared/errors.ts';
 
 const BASE_URL = 'https://generativelanguage.googleapis.com';
 
@@ -51,7 +51,7 @@ export class GoogleAdapter extends BaseAdapter {
   }
 
   async *stream(params: StreamParams): AsyncGenerator<StreamEvent> {
-    const { messages, systemPrompt, tools, maxTokens = 4096 } = params;
+    const { messages, systemPrompt, tools, maxTokens = 4096, abortSignal } = params;
     const contents = messagesToGemini(messages);
 
     const body: Record<string, unknown> = {
@@ -81,8 +81,12 @@ export class GoogleAdapter extends BaseAdapter {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
+        signal: abortSignal,
       });
     } catch (err) {
+      if (isAbortError(err)) {
+        throw err;
+      }
       throw new ProviderError(
         `Failed to connect: ${err instanceof Error ? err.message : String(err)}`,
         'google',
@@ -141,6 +145,15 @@ export class GoogleAdapter extends BaseAdapter {
           }
         }
       }
+    } catch (err) {
+      if (isAbortError(err)) {
+        throw err;
+      }
+      throw new ProviderError(
+        `Google stream error: ${err instanceof Error ? err.message : String(err)}`,
+        'google',
+        err,
+      );
     } finally {
       reader.releaseLock();
     }

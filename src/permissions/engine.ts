@@ -1,6 +1,7 @@
 import { addProjectAllowedTool, addProjectBlockedTool } from '../config/project.ts';
 import { AllowedList } from './allowed-list.ts';
 import { BlockedList } from './blocked-list.ts';
+import { matchesToolPattern } from './matcher.ts';
 import { isEditTool } from './modes.ts';
 import { resolveRules } from './tiers.ts';
 import type {
@@ -30,6 +31,13 @@ export class PermissionEngine {
   }
 
   checkSync(request: PermissionRequest): PermissionResult {
+    if (matchesToolPattern(request, 'Skill')) {
+      return {
+        decision: 'allow',
+        reason: 'The Skill dispatcher is always allowed.',
+      };
+    }
+
     const blockedRule = this.blockedList.match(request);
     if (blockedRule) {
       return {
@@ -80,6 +88,11 @@ export class PermissionEngine {
     if (tier === 'project') {
       addProjectBlockedTool(this.cwd, pattern);
     }
+  }
+
+  clearTier(tier: PermissionTier): void {
+    this.allowedList.clearTier(tier);
+    this.blockedList.clearTier(tier);
   }
 
   getMode(): PermissionMode {

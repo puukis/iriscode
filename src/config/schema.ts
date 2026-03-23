@@ -20,11 +20,15 @@ export const PROVIDER_NAMES = [
 export type ProviderName = typeof PROVIDER_NAMES[number];
 
 const PermissionModeSchema = z.enum(['default', 'acceptEdits', 'plan']);
+const NotificationModeSchema = z.enum(['iterm2', 'bell', 'off']);
 
 export const defaults = {
   default_model: 'anthropic/claude-sonnet-4-6',
   model: 'anthropic/claude-sonnet-4-6',
   log_level: 'warn',
+  vim_mode: false,
+  notifications: 'bell' as const,
+  shown_splash: false,
   permissions: {
     mode: 'default' as PermissionMode,
     allowed_tools: [] as string[],
@@ -36,10 +40,20 @@ export const defaults = {
     warn_at: 8000,
   },
   mcp_servers: [] as Array<{
-    url: string;
     name: string;
+    type: 'stdio' | 'http';
+    command?: string;
+    args?: string[];
+    url?: string;
+    bearer_token_env_var?: string;
+    http_headers?: Record<string, string>;
+    env_http_headers?: Record<string, string>;
+    startup_timeout_sec: number;
+    tool_timeout_sec: number;
     enabled: boolean;
+    required: boolean;
   }>,
+  mcp_oauth_callback_port: 5555,
   providers: {
     anthropic: { apiKey: null, baseUrl: null },
     openai: { apiKey: null, baseUrl: null },
@@ -92,10 +106,35 @@ export const MemorySchema = z.object({
 }).partial().strict();
 
 export const McpServerSchema = z.object({
-  url: z.string().url(),
   name: z.string().min(1),
+  type: z.enum(['stdio', 'http']),
+  command: z.string().min(1).optional(),
+  args: z.array(z.string().min(1)).optional(),
+  url: z.string().url().optional(),
+  bearer_token_env_var: z.string().min(1).optional(),
+  http_headers: z.record(z.string(), z.string()).optional(),
+  env_http_headers: z.record(z.string(), z.string()).optional(),
+  startup_timeout_sec: z.number().int().positive().optional(),
+  tool_timeout_sec: z.number().int().positive().optional(),
   enabled: z.boolean().optional(),
-}).strict();
+  required: z.boolean().optional(),
+}).strict().superRefine((value, ctx) => {
+  if (value.type === 'stdio' && !value.command) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['command'],
+      message: 'command is required when type is "stdio"',
+    });
+  }
+
+  if (value.type === 'http' && !value.url) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['url'],
+      message: 'url is required when type is "http"',
+    });
+  }
+});
 
 export const ProjectConfigSchema = z.object({
   model: z.string().min(1).optional(),
@@ -103,7 +142,12 @@ export const ProjectConfigSchema = z.object({
   permissions: PermissionsSchema.optional(),
   memory: MemorySchema.optional(),
   mcp_servers: z.array(McpServerSchema).optional(),
+  mcp_oauth_callback_port: z.number().int().positive().optional(),
+  mcp_oauth_callback_url: z.string().url().optional(),
   log_level: z.string().min(1).optional(),
+  vim_mode: z.boolean().optional(),
+  notifications: NotificationModeSchema.optional(),
+  shown_splash: z.boolean().optional(),
 }).strict();
 
 export const GlobalConfigSchema = z.object({
@@ -112,7 +156,12 @@ export const GlobalConfigSchema = z.object({
   permissions: PermissionsSchema.optional(),
   memory: MemorySchema.optional(),
   mcp_servers: z.array(McpServerSchema).optional(),
+  mcp_oauth_callback_port: z.number().int().positive().optional(),
+  mcp_oauth_callback_url: z.string().url().optional(),
   log_level: z.string().min(1).optional(),
+  vim_mode: z.boolean().optional(),
+  notifications: NotificationModeSchema.optional(),
+  shown_splash: z.boolean().optional(),
 }).strict();
 
 const ResolvedProviderConfigSchema = z.object({
@@ -149,9 +198,18 @@ const ResolvedMemorySchema = z.object({
 }).strict();
 
 const ResolvedMcpServerSchema = z.object({
-  url: z.string().url(),
   name: z.string().min(1),
+  type: z.enum(['stdio', 'http']),
+  command: z.string().min(1).optional(),
+  args: z.array(z.string()),
+  url: z.string().url().optional(),
+  bearer_token_env_var: z.string().min(1).optional(),
+  http_headers: z.record(z.string(), z.string()).optional(),
+  env_http_headers: z.record(z.string(), z.string()).optional(),
+  startup_timeout_sec: z.number().int().positive(),
+  tool_timeout_sec: z.number().int().positive(),
   enabled: z.boolean(),
+  required: z.boolean(),
 }).strict();
 
 export const ResolvedConfigSchema = z.object({
@@ -161,15 +219,18 @@ export const ResolvedConfigSchema = z.object({
   permissions: ResolvedPermissionsSchema,
   memory: ResolvedMemorySchema,
   mcp_servers: z.array(ResolvedMcpServerSchema),
+  mcp_oauth_callback_port: z.number().int().positive(),
+  mcp_oauth_callback_url: z.string().url().optional(),
   context_text: z.string(),
   log_level: z.string().min(1),
+  vim_mode: z.boolean(),
+  notifications: NotificationModeSchema,
+  shown_splash: z.boolean(),
 }).strict();
-
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
 export type ProvidersConfig = z.infer<typeof ProvidersSchema>;
 export type PermissionsConfig = z.infer<typeof PermissionsSchema>;
 export type MemoryConfig = z.infer<typeof MemorySchema>;
-export type McpServerConfig = z.infer<typeof McpServerSchema>;
 export type ProjectConfig = z.infer<typeof ProjectConfigSchema>;
 export type GlobalConfig = z.infer<typeof GlobalConfigSchema>;
 export type ResolvedConfig = z.infer<typeof ResolvedConfigSchema>;

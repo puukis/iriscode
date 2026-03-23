@@ -103,7 +103,7 @@ function stringifyInput(input: Record<string, unknown>): string {
 }
 
 function getScopedPatternValue(request: PermissionRequest): string | undefined {
-  switch (request.toolName) {
+  switch (toInternalToolName(request.toolName)) {
     case 'bash':
       return normalizePatternValue(request.input.command);
     case 'read':
@@ -119,7 +119,7 @@ function getScopedPatternValue(request: PermissionRequest): string | undefined {
     case 'task':
       return normalizePatternValue(request.input.description);
     case 'skill':
-      return normalizePatternValue(request.input.name);
+      return normalizePatternValue(request.input.command ?? request.input.name);
     case 'ask-user':
       return normalizePatternValue(request.input.question);
     case 'glob':
@@ -196,7 +196,7 @@ function matchesClaudeStylePattern(
     return true;
   }
 
-  if (request.toolName === 'web-fetch' && argumentMatcher.startsWith('domain:')) {
+  if (toInternalToolName(request.toolName) === 'web-fetch' && argumentMatcher.startsWith('domain:')) {
     const domainPattern = argumentMatcher.slice('domain:'.length).trim();
     const hostname = extractUrlHostname(request.input.url);
     if (!hostname) {
@@ -211,11 +211,19 @@ function matchesClaudeStylePattern(
     return matchesGlobExpression(stringifyInput(request.input), argumentMatcher);
   }
 
+  if (
+    toInternalToolName(request.toolName) === 'bash'
+    && argumentMatcher.includes(':')
+    && matchesGlobExpression(subject, argumentMatcher.replace(/:/g, ' '))
+  ) {
+    return true;
+  }
+
   return matchesGlobExpression(subject, argumentMatcher);
 }
 
 function getPatternSubject(request: PermissionRequest): string | undefined {
-  switch (request.toolName) {
+  switch (toInternalToolName(request.toolName)) {
     case 'bash':
       return normalizePatternValue(request.input.command);
     case 'read':
@@ -235,7 +243,7 @@ function getPatternSubject(request: PermissionRequest): string | undefined {
     case 'task':
       return normalizePatternValue(request.input.description);
     case 'skill':
-      return normalizePatternValue(request.input.name);
+      return normalizePatternValue(request.input.command ?? request.input.name);
     case 'ask-user':
       return normalizePatternValue(request.input.question);
     default:

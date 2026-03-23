@@ -46,6 +46,12 @@ function appendRules(
 }
 
 function describeTierReason(tier: PermissionTier, decision: 'allow' | 'deny'): string {
+  if (tier === 'skill') {
+    return decision === 'allow'
+      ? 'Allowed temporarily by the active skill for this agent turn'
+      : 'Denied temporarily by the active skill for this agent turn';
+  }
+
   if (tier === 'project') {
     return decision === 'allow'
       ? 'Allowed by project configuration in IRIS.md or .iris/settings.local.json'

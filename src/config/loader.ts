@@ -59,11 +59,24 @@ export async function reloadConfig(cwd: string = process.cwd()): Promise<Resolve
       providers: resolveProviders(merged.providers),
       permissions: resolvePermissions(merged.permissions),
       memory: resolveMemory(merged.memory),
-      mcp_servers: resolveMcpServers(merged.mcp_servers),
+      mcp_servers: resolveMcpServers(mergeMcpServerInputs(
+        globalInput.config.mcp_servers,
+        projectInput.config.mcp_servers,
+      )),
+      mcp_oauth_callback_port: numberOrDefault(
+        merged.mcp_oauth_callback_port,
+        defaults.mcp_oauth_callback_port,
+      ),
+      ...(stringOrUndefined(merged.mcp_oauth_callback_url)
+        ? { mcp_oauth_callback_url: stringOrUndefined(merged.mcp_oauth_callback_url) }
+        : {}),
       context_text: [globalInput.contextText, projectInput.contextText]
         .filter((part) => typeof part === 'string' && part.length > 0)
         .join('\n\n'),
       log_level: stringOrDefault(merged.log_level, defaults.log_level),
+      vim_mode: booleanOrDefault(merged.vim_mode, defaults.vim_mode),
+      notifications: notificationModeOrDefault(merged.notifications, defaults.notifications),
+      shown_splash: booleanOrDefault(merged.shown_splash, defaults.shown_splash),
     };
 
     const validation = ResolvedConfigSchema.safeParse(candidate);
@@ -186,7 +199,7 @@ function resolveMemory(input: unknown): ResolvedConfig['memory'] {
 
 function resolveMcpServers(input: unknown): ResolvedConfig['mcp_servers'] {
   if (!Array.isArray(input)) {
-    return [...defaults.mcp_servers];
+    return [];
   }
 
   const byName = new Map<string, ResolvedConfig['mcp_servers'][number]>();
@@ -196,15 +209,28 @@ function resolveMcpServers(input: unknown): ResolvedConfig['mcp_servers'] {
     }
 
     const name = typeof entry.name === 'string' ? entry.name.trim() : '';
-    const url = typeof entry.url === 'string' ? entry.url.trim() : '';
-    if (!name || !url) {
+    const type = entry.type === 'stdio' || entry.type === 'http' ? entry.type : undefined;
+    if (!name || !type) {
       continue;
     }
 
     byName.set(name, {
       name,
-      url,
+      type,
+      command: typeof entry.command === 'string' && entry.command.trim() ? entry.command.trim() : undefined,
+      args: Array.isArray(entry.args)
+        ? entry.args.filter((arg): arg is string => typeof arg === 'string').map((arg) => arg.trim()).filter(Boolean)
+        : [],
+      url: typeof entry.url === 'string' && entry.url.trim() ? entry.url.trim() : undefined,
+      bearer_token_env_var: typeof entry.bearer_token_env_var === 'string' && entry.bearer_token_env_var.trim()
+        ? entry.bearer_token_env_var.trim()
+        : undefined,
+      http_headers: stringRecordOrUndefined(entry.http_headers),
+      env_http_headers: stringRecordOrUndefined(entry.env_http_headers),
+      startup_timeout_sec: numberOrDefault(entry.startup_timeout_sec, 10),
+      tool_timeout_sec: numberOrDefault(entry.tool_timeout_sec, 60),
       enabled: typeof entry.enabled === 'boolean' ? entry.enabled : true,
+      required: typeof entry.required === 'boolean' ? entry.required : false,
     });
   }
 
@@ -228,6 +254,19 @@ function numberOrDefault(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
+function booleanOrDefault(value: unknown, fallback: boolean): boolean {
+  return typeof value === 'boolean' ? value : fallback;
+}
+
+function notificationModeOrDefault(
+  value: unknown,
+  fallback: ResolvedConfig['notifications'],
+): ResolvedConfig['notifications'] {
+  return value === 'iterm2' || value === 'bell' || value === 'off'
+    ? value
+    : fallback;
+}
+
 function arrayOfStrings(value: unknown): string[] {
   if (!Array.isArray(value)) {
     return [];
@@ -237,6 +276,34 @@ function arrayOfStrings(value: unknown): string[] {
     .filter((entry): entry is string => typeof entry === 'string')
     .map((entry) => entry.trim())
     .filter(Boolean);
+}
+
+function mergeMcpServerInputs(...values: unknown[]): unknown[] {
+  const merged: unknown[] = [];
+  for (const value of values) {
+    if (Array.isArray(value)) {
+      merged.push(...value);
+    }
+  }
+  return merged;
+}
+
+function stringRecordOrUndefined(value: unknown): Record<string, string> | undefined {
+  if (!isPlainObject(value)) {
+    return undefined;
+  }
+
+  const result = Object.fromEntries(
+    Object.entries(value)
+      .filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].trim().length > 0)
+      .map(([key, entry]) => [key, entry.trim()]),
+  );
+
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function stringOrUndefined(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
 export function resetConfigCacheForTests(): void {

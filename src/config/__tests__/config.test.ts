@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { existsSync } from 'fs';
 import { join } from 'path';
 import { loadConfig } from '../loader.ts';
 import { loadProjectConfig, PROJECT_SETTINGS_FILE, PROJECT_STATE_DIR } from '../project.ts';
@@ -33,9 +34,11 @@ describe('config', () => {
           expect(config.log_level).toBe('debug');
           expect(config.permissions.mode).toBe('default');
           expect(config.context_text).toBe('');
+          expect(existsSync(join(cwd, 'IRIS.md'))).toBe(false);
           await expect(loadProjectConfig(cwd)).resolves.toMatchObject({
             config: {},
           });
+          expect(existsSync(join(cwd, 'IRIS.md'))).toBe(false);
           expect(Bun.file(join(cwd, PROJECT_STATE_DIR, PROJECT_SETTINGS_FILE)).size).toBeGreaterThan(0);
           expect(Bun.file(join(cwd, '.iris', '.gitignore')).size).toBeGreaterThan(0);
         });

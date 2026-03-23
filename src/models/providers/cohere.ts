@@ -1,6 +1,6 @@
 import { BaseAdapter, type TokenCost } from '../base-adapter.ts';
 import type { StreamEvent, StreamParams, Message } from '../../shared/types.ts';
-import { ProviderError } from '../../shared/errors.ts';
+import { ProviderError, isAbortError } from '../../shared/errors.ts';
 
 interface CohereMessage {
   role: 'user' | 'assistant' | 'tool';
@@ -47,7 +47,7 @@ export class CohereAdapter extends BaseAdapter {
   }
 
   async *stream(params: StreamParams): AsyncGenerator<StreamEvent> {
-    const { messages, systemPrompt, tools, maxTokens = 4096 } = params;
+    const { messages, systemPrompt, tools, maxTokens = 4096, abortSignal } = params;
 
     const cohereMessages = messagesToCohere(messages, systemPrompt);
 
@@ -78,8 +78,12 @@ export class CohereAdapter extends BaseAdapter {
           Authorization: `Bearer ${this.apiKey}`,
         },
         body: JSON.stringify(body),
+        signal: abortSignal,
       });
     } catch (err) {
+      if (isAbortError(err)) {
+        throw err;
+      }
       throw new ProviderError(
         `Failed to connect: ${err instanceof Error ? err.message : String(err)}`,
         'cohere',
@@ -154,6 +158,15 @@ export class CohereAdapter extends BaseAdapter {
           }
         }
       }
+    } catch (err) {
+      if (isAbortError(err)) {
+        throw err;
+      }
+      throw new ProviderError(
+        `Cohere stream error: ${err instanceof Error ? err.message : String(err)}`,
+        'cohere',
+        err,
+      );
     } finally {
       reader.releaseLock();
     }

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { OllamaAdapter } from '../ollama.ts';
 import { OpenAIAdapter } from '../openai.ts';
+import { isAbortError } from '../../../shared/errors.ts';
 import { makeJsonStreamResponse, withMockFetch } from '../../../shared/test-helpers.ts';
 
 describe('model providers', () => {
@@ -152,6 +153,44 @@ describe('model providers', () => {
 
         expect(events.some((event) => event.type === 'tool_call' && event.toolCall?.name === 'read')).toBe(true);
         expect(events.some((event) => event.type === 'done' && event.stopReason === 'tool_use')).toBe(true);
+      },
+    );
+  });
+
+  test('OllamaAdapter propagates aborts instead of wrapping them as provider errors', async () => {
+    const controller = new AbortController();
+
+    await withMockFetch(
+      (async (_input, init) =>
+        new Promise<Response>((_, reject) => {
+          const signal = init?.signal as AbortSignal | undefined;
+          signal?.addEventListener(
+            'abort',
+            () => reject(new DOMException('The operation was aborted.', 'AbortError')),
+            { once: true },
+          );
+        })) as typeof fetch,
+      async () => {
+        const adapter = new OllamaAdapter('qwen3', 'http://localhost:11434');
+        const run = (async () => {
+          for await (const _event of adapter.stream({
+            messages: [{ role: 'user', content: 'hello' }],
+            tools: [],
+            abortSignal: controller.signal,
+          })) {
+            // no-op
+          }
+        })();
+
+        controller.abort();
+        let aborted = false;
+        try {
+          await run;
+        } catch (error) {
+          aborted = isAbortError(error);
+        }
+
+        expect(aborted).toBe(true);
       },
     );
   });

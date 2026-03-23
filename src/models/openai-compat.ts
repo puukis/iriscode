@@ -1,5 +1,5 @@
 import type { StreamEvent, StreamParams, Message } from '../shared/types.ts';
-import { ProviderError } from '../shared/errors.ts';
+import { ProviderError, isAbortError } from '../shared/errors.ts';
 
 export interface OpenAICompatOptions {
   baseUrl: string;
@@ -41,7 +41,7 @@ export async function* streamOpenAICompat(
   params: StreamParams,
 ): AsyncGenerator<StreamEvent> {
   const { baseUrl, apiKey, modelId, provider, extraHeaders } = opts;
-  const { messages, systemPrompt, tools, maxTokens = 4096 } = params;
+  const { messages, systemPrompt, tools, maxTokens = 4096, abortSignal } = params;
 
   const oaiMessages = messagesToOAI(messages, systemPrompt);
 
@@ -74,8 +74,12 @@ export async function* streamOpenAICompat(
         ...extraHeaders,
       },
       body: JSON.stringify(body),
+      signal: abortSignal,
     });
   } catch (err) {
+    if (isAbortError(err)) {
+      throw err;
+    }
     throw new ProviderError(
       `Failed to connect to ${baseUrl}: ${err instanceof Error ? err.message : String(err)}`,
       provider,
@@ -152,6 +156,15 @@ export async function* streamOpenAICompat(
         }
       }
     }
+  } catch (err) {
+    if (isAbortError(err)) {
+      throw err;
+    }
+    throw new ProviderError(
+      `Stream error: ${err instanceof Error ? err.message : String(err)}`,
+      provider,
+      err,
+    );
   } finally {
     reader.releaseLock();
   }

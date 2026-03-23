@@ -25,3 +25,28 @@ export class ToolError extends IrisCodeError {
     this.name = 'ToolError';
   }
 }
+
+export class McpConnectionError extends IrisCodeError {
+  constructor(message: string, public readonly serverName: string, cause?: unknown) {
+    super(`[mcp:${serverName}] ${message}`, cause);
+    this.name = 'McpConnectionError';
+  }
+}
+
+export function isAbortError(error: unknown): boolean {
+  if (typeof DOMException !== 'undefined' && error instanceof DOMException) {
+    return error.name === 'AbortError';
+  }
+
+  if (error instanceof Error) {
+    if (error.name === 'AbortError') {
+      return true;
+    }
+    if (error.cause && isAbortError(error.cause)) {
+      return true;
+    }
+    return /aborted|aborterror/i.test(error.message);
+  }
+
+  return false;
+}

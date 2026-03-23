@@ -30,23 +30,6 @@ export const PROJECT_MEMORY_DIR = '.iris/memory';
 export const PROJECT_SETTINGS_FILE = 'settings.local.json';
 const PROJECT_GITIGNORE_FILE = '.gitignore';
 
-const DEFAULT_PROJECT_TEMPLATE = `# Project Name
-
-Describe your project here. This text is injected into the agent's context at the start of every session.
-
-## Config
-
-\`\`\`yaml
-# model: anthropic/claude-sonnet-4-6
-# permissions:
-#   mode: default
-#   allowed_tools: [read, write, edit, bash, glob, grep]
-#   disallowed_tools: []
-# memory:
-#   max_tokens: 10000
-\`\`\`
-`;
-
 const DEFAULT_PROJECT_STATE = {
   permissions: {
     allow: [] as string[],
@@ -71,15 +54,14 @@ export async function loadProjectConfig(cwd: string = process.cwd()): Promise<Lo
 
 export function loadProjectConfigSync(cwd: string = process.cwd()): LoadedProjectConfig {
   const projectRoot = resolve(cwd);
-  const rootConfigPath = resolve(projectRoot, PROJECT_CONTEXT_FILE);
-  const hadRootConfig = existsSync(rootConfigPath);
   ensureProjectContext(projectRoot);
+  const files = collectProjectConfigFiles(projectRoot);
   const memoryFiles = loadProjectMemoryFilesSync(projectRoot);
   const memoryContext = memoryFiles.length > 0
     ? ['Persisted project memory:', ...memoryFiles.map((file) => `- ${file.text}`)].join('\n')
     : '';
 
-  if (!hadRootConfig) {
+  if (files.length === 0) {
     const validation = ProjectConfigSchema.safeParse(
       normalizeConfigInput(projectStateToProjectConfig(loadProjectSettingsStateSync(projectRoot))),
     );
@@ -94,7 +76,6 @@ export function loadProjectConfigSync(cwd: string = process.cwd()): LoadedProjec
     };
   }
 
-  const files = collectProjectConfigFiles(projectRoot);
   let mergedConfig: Record<string, unknown> = {};
   const contextParts: string[] = [];
   const contextFiles: LoadedContextFile[] = [];
@@ -144,11 +125,6 @@ export function ensureProjectContext(cwd: string): void {
   const settingsPath = join(stateDir, PROJECT_SETTINGS_FILE);
   if (!existsSync(settingsPath)) {
     writeFileSync(settingsPath, `${JSON.stringify(DEFAULT_PROJECT_STATE, null, 2)}\n`, 'utf-8');
-  }
-
-  const irisPath = join(projectRoot, PROJECT_CONTEXT_FILE);
-  if (!existsSync(irisPath)) {
-    writeFileSync(irisPath, DEFAULT_PROJECT_TEMPLATE, 'utf-8');
   }
 }
 

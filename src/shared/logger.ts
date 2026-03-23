@@ -1,3 +1,7 @@
+import { appendFileSync, mkdirSync } from 'fs';
+import { homedir } from 'os';
+import { join, resolve } from 'path';
+
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'silent';
 
 const LOG_LEVELS: Record<LogLevel, number> = {
@@ -10,10 +14,31 @@ const LOG_LEVELS: Record<LogLevel, number> = {
 
 let currentLevel: LogLevel = (process.env.LOG_LEVEL as LogLevel) ?? 'warn';
 
+function getDebugLogPath(): string {
+  const directory = resolve(process.env.HOME ?? homedir(), '.iris');
+  mkdirSync(directory, { recursive: true });
+  return join(directory, 'debug.log');
+}
+
+function writeDebugLog(message: string): void {
+  try {
+    appendFileSync(getDebugLogPath(), `${message}\n`, 'utf-8');
+  } catch {
+    // Debug logging must never interfere with primary execution paths.
+  }
+}
+
 function log(level: LogLevel, ...args: unknown[]): void {
+  const prefix = `[iriscode:${level}]`;
+  const message = `${prefix} ${args.map(String).join(' ')}`;
+
+  if (level === 'debug') {
+    writeDebugLog(message);
+    return;
+  }
+
   if (LOG_LEVELS[level] >= LOG_LEVELS[currentLevel]) {
-    const prefix = `[iriscode:${level}]`;
-    process.stderr.write(`${prefix} ${args.map(String).join(' ')}\n`);
+    process.stderr.write(`${message}\n`);
   }
 }
 

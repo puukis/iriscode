@@ -19,11 +19,22 @@ export const GLOBAL_ENV_FILE = '.env';
 const DEFAULT_GLOBAL_CONFIG_TEMPLATE = `# IrisCode global configuration
 # default_model = "anthropic/claude-sonnet-4-6"
 # log_level = "warn"
+# vim_mode = false
+# notifications = "bell"
+# shown_splash = true
 #
 # [permissions]
 # mode = "default"
 # allowed_tools = ["read", "glob", "grep"]
 # disallowed_tools = []
+#
+# mcp_oauth_callback_port = 5555
+#
+# [[mcp_servers]]
+# name = "filesystem"
+# type = "stdio"
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
 #
 # [providers.openai]
 # apiKey = "sk-..."
@@ -136,6 +147,15 @@ function configToTomlShape(config: GlobalConfig): Record<string, unknown> {
   if (config.log_level) {
     result.log_level = config.log_level;
   }
+  if (typeof config.vim_mode === 'boolean') {
+    result.vim_mode = config.vim_mode;
+  }
+  if (config.notifications) {
+    result.notifications = config.notifications;
+  }
+  if (typeof config.shown_splash === 'boolean') {
+    result.shown_splash = config.shown_splash;
+  }
   if (config.permissions) {
     result.permissions = config.permissions;
   }
@@ -147,6 +167,12 @@ function configToTomlShape(config: GlobalConfig): Record<string, unknown> {
   }
   if (config.mcp_servers) {
     result.mcp_servers = config.mcp_servers;
+  }
+  if (typeof config.mcp_oauth_callback_port === 'number') {
+    result.mcp_oauth_callback_port = config.mcp_oauth_callback_port;
+  }
+  if (config.mcp_oauth_callback_url) {
+    result.mcp_oauth_callback_url = config.mcp_oauth_callback_url;
   }
 
   return result;

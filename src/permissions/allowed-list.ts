@@ -29,4 +29,8 @@ export class AllowedList {
   getRules(): PermissionRule[] {
     return [...this.rules];
   }
+
+  clearTier(tier: PermissionTier): void {
+    this.rules = this.rules.filter((rule) => rule.tier !== tier);
+  }
 }

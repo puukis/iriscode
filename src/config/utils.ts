@@ -171,7 +171,14 @@ export function redactSecrets(value: unknown): unknown {
 
   const result: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value)) {
-    if (key.toLowerCase().includes('apikey') || key.toLowerCase().includes('api_key')) {
+    const normalizedKey = key.toLowerCase();
+    if (
+      normalizedKey.includes('apikey')
+      || normalizedKey.includes('api_key')
+      || normalizedKey.includes('token')
+      || normalizedKey.includes('authorization')
+      || normalizedKey.includes('secret')
+    ) {
       result[key] = entry ? '***' : entry;
       continue;
     }
