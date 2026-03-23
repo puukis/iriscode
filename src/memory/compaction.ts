@@ -105,7 +105,7 @@ export class CompactionManager {
     ];
 
     let summary = '';
-    for await (const event of adapter.stream({ messages, systemPrompt: undefined })) {
+    for await (const event of adapter.stream({ messages, tools: [], systemPrompt: undefined })) {
       if (event.type === 'text') {
         summary += event.text ?? '';
       }

@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { createHeadlessSession } from './headless-session.ts';
 import { runAgentLoop, type AgentLoopOptions } from './loop.ts';
 import { buildDefaultSystemPrompt } from './system-prompt.ts';
 import { SubagentContext } from './subagent.ts';
@@ -13,6 +14,9 @@ import type { ResolvedConfig } from '../config/schema.ts';
 import type { GraphTracker } from '../graph/tracker.ts';
 import type { AgentNode } from '../graph/model.ts';
 import type { DiffInterceptor } from '../diff/interceptor.ts';
+import type { McpRegistry } from '../mcp/registry.ts';
+import type { HookRegistry } from '../hooks/registry.ts';
+import type { SkillLoadResult } from '../skills/types.ts';
 
 export interface RunSubagentTaskOptions {
   currentModel: string;
@@ -29,6 +33,9 @@ export interface RunSubagentTaskOptions {
   sessionId?: string;
   onInfo?: AgentLoopOptions['onInfo'];
   onPermissionPrompt?: AgentLoopOptions['onPermissionPrompt'];
+  mcpRegistry?: McpRegistry;
+  hookRegistry?: HookRegistry;
+  skillResult?: SkillLoadResult;
 }
 
 export interface SpawnOptions {
@@ -48,6 +55,9 @@ interface OrchestratorRuntimeOptions {
   onInfo?: AgentLoopOptions['onInfo'];
   onPermissionPrompt?: AgentLoopOptions['onPermissionPrompt'];
   diffInterceptor?: DiffInterceptor;
+  mcpRegistry?: McpRegistry;
+  hookRegistry?: HookRegistry;
+  skillResult?: SkillLoadResult;
 }
 
 export class Orchestrator {
@@ -63,6 +73,9 @@ export class Orchestrator {
   private onInfo?: OrchestratorRuntimeOptions['onInfo'];
   private onPermissionPrompt?: OrchestratorRuntimeOptions['onPermissionPrompt'];
   private diffInterceptor?: DiffInterceptor;
+  private mcpRegistry?: McpRegistry;
+  private hookRegistry?: HookRegistry;
+  private skillResult?: SkillLoadResult;
   private readonly activeAgents = new Map<string, { id: string; startedAt: number }>();
 
   constructor(
@@ -83,6 +96,9 @@ export class Orchestrator {
     this.onInfo = options.onInfo;
     this.onPermissionPrompt = options.onPermissionPrompt;
     this.diffInterceptor = options.diffInterceptor;
+    this.mcpRegistry = options.mcpRegistry;
+    this.hookRegistry = options.hookRegistry;
+    this.skillResult = options.skillResult;
   }
 
   updateConfig(config: ResolvedConfig): void {
@@ -125,6 +141,15 @@ export class Orchestrator {
     if (options.diffInterceptor !== undefined) {
       this.diffInterceptor = options.diffInterceptor;
     }
+    if (options.mcpRegistry !== undefined) {
+      this.mcpRegistry = options.mcpRegistry;
+    }
+    if (options.hookRegistry !== undefined) {
+      this.hookRegistry = options.hookRegistry;
+    }
+    if (options.skillResult !== undefined) {
+      this.skillResult = options.skillResult;
+    }
   }
 
   async spawnSubagent(options: SpawnOptions): Promise<string> {
@@ -163,6 +188,9 @@ export class Orchestrator {
       onPermissionPrompt: this.onPermissionPrompt,
       parentCostTracker: this.costTracker,
       diffInterceptor: this.diffInterceptor,
+      mcpRegistry: this.mcpRegistry,
+      hookRegistry: this.hookRegistry,
+      skillResult: this.skillResult,
     });
 
     try {
@@ -211,9 +239,22 @@ export async function runSubagentTask(
 
   const adapter = options.modelRegistry.get(modelKey);
   const loadedSkills = [...(options.loadedSkills ?? [])];
-  const tools = createDefaultRegistry({ currentModel: modelKey });
   const permissions =
     options.permissions ?? new PermissionEngine(options.permissionMode ?? 'default', options.cwd);
+  const session = createHeadlessSession({
+    cwd: options.cwd ?? process.cwd(),
+    config: getFallbackConfig(options, modelKey),
+    permissionEngine: permissions,
+    model: modelKey,
+    mcpRegistry: options.mcpRegistry,
+  });
+  const tools = createDefaultRegistry({
+    currentModel: modelKey,
+    mcpRegistry: options.mcpRegistry,
+    permissionEngine: permissions,
+    skillResult: options.skillResult,
+    session,
+  });
   const systemPrompt =
     options.baseSystemPrompt ??
     buildDefaultSystemPrompt(true, tools.getDefinitions().map((tool) => tool.name));
@@ -226,6 +267,7 @@ export async function runSubagentTask(
 
   try {
     const history = [{ role: 'user' as const, content: description }];
+    session.messages = history;
     const result = await runAgentLoop(history, {
       adapter,
       tools,
@@ -248,6 +290,7 @@ export async function runSubagentTask(
             permissions,
             loadedSkills,
             subagentDepth: nextDepth,
+            mcpRegistry: options.mcpRegistry,
           },
           nestedModel,
         ),
@@ -257,6 +300,8 @@ export async function runSubagentTask(
       parentAgentId: nextDepth > 1 ? `compat-${nextDepth - 1}` : 'root',
       depth: nextDepth,
       description,
+      hookRegistry: options.hookRegistry,
+      session,
     });
 
     const { provider, modelId } = parseModelString(modelKey);
@@ -285,4 +330,46 @@ export async function runSubagentTask(
 function normalizeModelKey(model: string): string {
   const { provider, modelId } = parseModelString(model);
   return `${provider}/${modelId}`;
+}
+
+function getFallbackConfig(
+  options: RunSubagentTaskOptions,
+  modelKey: string,
+): ResolvedConfig {
+  return {
+    model: modelKey,
+    default_model: modelKey,
+    providers: {
+      anthropic: { apiKey: null, baseUrl: null },
+      openai: { apiKey: null, baseUrl: null },
+      google: { apiKey: null, baseUrl: null },
+      groq: { apiKey: null, baseUrl: null },
+      mistral: { apiKey: null, baseUrl: null },
+      deepseek: { apiKey: null, baseUrl: null },
+      xai: { apiKey: null, baseUrl: null },
+      perplexity: { apiKey: null, baseUrl: null },
+      together: { apiKey: null, baseUrl: null },
+      fireworks: { apiKey: null, baseUrl: null },
+      cohere: { apiKey: null, baseUrl: null },
+      openrouter: { apiKey: null, baseUrl: null },
+      ollama: { apiKey: null, baseUrl: 'http://localhost:11434' },
+    },
+    permissions: {
+      mode: options.permissionMode ?? 'default',
+      allowed_tools: [],
+      disallowed_tools: [],
+    },
+    memory: {
+      max_tokens: 10000,
+      max_lines: 200,
+      warn_at: 8000,
+    },
+    mcp_servers: [],
+    mcp_oauth_callback_port: 5555,
+    context_text: '',
+    log_level: 'warn',
+    vim_mode: false,
+    notifications: 'off',
+    shown_splash: true,
+  };
 }

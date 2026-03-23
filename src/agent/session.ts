@@ -24,6 +24,7 @@ import type {
 } from '../commands/types.ts';
 import { loadConfig } from '../config/loader.ts';
 import type { DiffResult } from '../shared/types.ts';
+import type { McpRegistry } from '../mcp/registry.ts';
 
 const PROJECT_SESSION_DIR = '.iris/sessions';
 const GLOBAL_PROJECTS_DIR = '.iris/projects';
@@ -35,11 +36,18 @@ interface SessionHooks {
   onExecutePrompt?: (request: DetachedPromptRequest) => Promise<string>;
   onInfo?: (text: string) => void;
   onError?: (text: string) => void;
+  onShowCommand?: (text: string) => void;
+  onResumeUi?: () => void;
   onAsk?: (question: string) => Promise<string>;
   onGetToolDefinitions?: (allowedTools?: string[]) => ReturnType<SessionState['getToolDefinitions']>;
   onOpenModelPicker?: () => Promise<string | undefined>;
   onOpenSessionPicker?: (sessions: SessionSnapshotSummary[]) => Promise<SessionSnapshotSummary | undefined>;
   onOpenMemoryMenu?: () => Promise<import('../commands/types.ts').MemoryMenuAction | undefined>;
+  onOpenMcpMenu?: () => Promise<import('../commands/types.ts').McpMenuAction | undefined>;
+  onOpenPicker?: (
+    options: import('../commands/types.ts').PickerOption[],
+    title?: string,
+  ) => Promise<string | undefined>;
   onViewDiff?: (diff: DiffResult, options?: { readOnly?: boolean; autoAccept?: boolean }) => Promise<DiffDecision | void>;
   onRestoreSnapshot?: (snapshot: SessionSnapshot) => void;
   onRefreshContext?: () => Promise<void>;
@@ -64,6 +72,7 @@ interface SessionOptions {
   diffStore?: DiffStore;
   autosave?: boolean;
   hooks?: SessionHooks;
+  mcpRegistry?: McpRegistry;
 }
 
 export class Session implements SessionState {
@@ -86,7 +95,9 @@ export class Session implements SessionState {
   permissionEngine: PermissionEngine;
   private config: ResolvedConfig;
   private hooks: SessionHooks;
+  private readonly mcpRegistry?: McpRegistry;
   private autosaveTimer?: ReturnType<typeof setInterval>;
+  private nextPromptModelOverride: string | null = null;
 
   constructor(options: SessionOptions) {
     this.cwd = resolve(options.cwd);
@@ -106,11 +117,13 @@ export class Session implements SessionState {
     this.costTracker = options.costTracker ?? new CostTracker();
     this.diffStore = options.diffStore ?? new DiffStore();
     this.graphTracker = new GraphTracker('root agent', this.model);
+    this.mcpRegistry = options.mcpRegistry;
     this.orchestrator = new Orchestrator(options.config, this.graphTracker, this.permissionEngine, {
       cwd: this.cwd,
       currentModel: this.model,
       costTracker: this.costTracker,
       sessionId: this.id,
+      mcpRegistry: this.mcpRegistry,
     });
     this.hooks = options.hooks ?? {};
 
@@ -126,6 +139,7 @@ export class Session implements SessionState {
       currentModel: this.model,
       costTracker: this.costTracker,
       sessionId: this.id,
+      mcpRegistry: this.mcpRegistry,
     });
   }
 
@@ -147,12 +161,29 @@ export class Session implements SessionState {
   clear(): void {
     this.messages = [];
     this.displayMessages = [];
+    this.nextPromptModelOverride = null;
     this.hooks.onClear?.();
+  }
+
+  addMessage(message: Message): void {
+    this.messages.push(message);
+    if (!message.isMeta && typeof message.content === 'string') {
+      this.displayMessages.push({
+        role: message.role === 'system' ? 'system' : message.role,
+        text: message.content,
+      });
+    }
+    bus.emit('session:message-added', {
+      sessionId: this.id,
+      role: message.role,
+      message,
+    });
   }
 
   compact(summary: string): void {
     this.messages = [{ role: 'assistant', content: `Conversation summary:\n${summary}` }];
     this.displayMessages = [{ role: 'system', text: 'Compacted. Context window refreshed.' }];
+    this.nextPromptModelOverride = null;
     this.hooks.onCompact?.(summary);
   }
 
@@ -188,6 +219,15 @@ export class Session implements SessionState {
     this.hooks.onError?.(text);
   }
 
+  showCommand(text: string): void {
+    this.displayMessages.push({ role: 'user', text });
+    this.hooks.onShowCommand?.(text);
+  }
+
+  resumeUi(): void {
+    this.hooks.onResumeUi?.();
+  }
+
   async ask(question: string): Promise<string> {
     if (!this.hooks.onAsk) {
       return '';
@@ -209,6 +249,29 @@ export class Session implements SessionState {
 
   async openMemoryMenu(): Promise<import('../commands/types.ts').MemoryMenuAction | undefined> {
     return this.hooks.onOpenMemoryMenu?.();
+  }
+
+  async openMcpMenu(): Promise<import('../commands/types.ts').McpMenuAction | undefined> {
+    return this.hooks.onOpenMcpMenu?.();
+  }
+
+  async openPicker(
+    options: import('../commands/types.ts').PickerOption[],
+    title?: string,
+  ): Promise<string | undefined> {
+    return this.hooks.onOpenPicker?.(options, title);
+  }
+
+  setNextPromptModelOverride(model: string | null): void {
+    this.nextPromptModelOverride = typeof model === 'string' && model.trim()
+      ? model.trim()
+      : null;
+  }
+
+  consumeNextPromptModelOverride(): string | undefined {
+    const nextModel = this.nextPromptModelOverride ?? undefined;
+    this.nextPromptModelOverride = null;
+    return nextModel;
   }
 
   async viewDiff(
@@ -257,6 +320,7 @@ export class Session implements SessionState {
       displayMessages: this.displayMessages.slice(0, Math.max(0, fromMessageIndex + 1)),
       memoryFiles: this.memoryFiles,
       autosave: false,
+      mcpRegistry: this.mcpRegistry,
     });
     await branched.save();
     return branched;

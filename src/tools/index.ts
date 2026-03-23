@@ -6,6 +6,8 @@ import type { CostTracker } from '../cost/tracker.ts';
 import type { Orchestrator } from '../agent/orchestrator.ts';
 import type { GraphTracker } from '../graph/tracker.ts';
 import type { DiffInterceptor } from '../diff/interceptor.ts';
+import type { Session } from '../agent/session.ts';
+import type { SkillLoadResult } from '../skills/types.ts';
 import { ReadFileTool } from './file/read.ts';
 import { WriteFileTool } from './file/write.ts';
 import { EditFileTool } from './file/edit.ts';
@@ -19,9 +21,10 @@ import { GitDiffTool } from './git/diff.ts';
 import { GitCommitTool } from './git/commit.ts';
 import { ToolSearchTool } from './discovery/tool-search.ts';
 import { TaskTool } from './orchestration/task.ts';
-import { SkillTool } from './orchestration/skill.ts';
 import { AskUserTool } from './orchestration/ask-user.ts';
 import { TodoWriteTool } from './orchestration/todo-write.ts';
+import { registerMcpTools } from '../mcp/tool-bridge.ts';
+import { buildSkillTool, buildSkillToolDefinition } from '../skills/meta-tool.ts';
 
 export interface LoadedSkill {
   name: string;
@@ -47,6 +50,7 @@ export interface ToolExecutionContext {
   askUser?: (question: string) => Promise<string>;
   runSubagent?: (description: string, model?: string) => Promise<string>;
   costTracker?: CostTracker;
+  session?: Session;
 }
 
 export interface Tool {
@@ -64,6 +68,10 @@ export interface DefaultToolRegistryOptions {
   agentId?: string;
   depth?: number;
   diffInterceptor?: DiffInterceptor;
+  mcpRegistry?: import('../mcp/registry.ts').McpRegistry;
+  permissionEngine?: import('../permissions/engine.ts').PermissionEngine;
+  skillResult?: SkillLoadResult;
+  session?: Session;
 }
 
 export class ToolRegistry {
@@ -115,6 +123,14 @@ export function createDefaultRegistry(options: DefaultToolRegistryOptions = {}):
   register(new GlobTool());
   register(new GrepTool());
 
+  if (options.session && options.permissionEngine && options.skillResult) {
+    const skillTool = buildSkillTool(options.skillResult.skills, options.session, options.permissionEngine);
+    registry.register({
+      ...skillTool,
+      definition: buildSkillToolDefinition(options.skillResult.availableSkills),
+    });
+  }
+
   registry.registerAlias('read_file', 'read');
   registry.registerAlias('write_file', 'write');
   registry.registerAlias('edit_file', 'edit');
@@ -130,9 +146,12 @@ export function createDefaultRegistry(options: DefaultToolRegistryOptions = {}):
   register(new GitCommitTool());
   register(new ToolSearchTool());
   register(new TaskTool(options.orchestrator));
-  register(new SkillTool());
   register(new AskUserTool());
   register(new TodoWriteTool());
+
+  if (options.mcpRegistry) {
+    registerMcpTools(registry, options.mcpRegistry, { allowedTools: allowed });
+  }
 
   return registry;
 }

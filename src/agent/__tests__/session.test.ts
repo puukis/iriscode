@@ -13,8 +13,12 @@ function makeResolvedConfig(): ResolvedConfig {
     permissions: structuredClone(defaults.permissions),
     memory: structuredClone(defaults.memory),
     mcp_servers: [],
+    mcp_oauth_callback_port: defaults.mcp_oauth_callback_port,
     context_text: '',
     log_level: defaults.log_level,
+    vim_mode: defaults.vim_mode,
+    notifications: defaults.notifications,
+    shown_splash: defaults.shown_splash,
   };
 }
 

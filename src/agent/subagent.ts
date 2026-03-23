@@ -1,4 +1,5 @@
 import { appendContextText, buildSubagentSystemPrompt } from './system-prompt.ts';
+import { createHeadlessSession } from './headless-session.ts';
 import { runAgentLoop } from './loop.ts';
 import type { ResolvedConfig } from '../config/schema.ts';
 import { createDefaultRegistry as createModelRegistry, parseModelString } from '../models/registry.ts';
@@ -10,6 +11,9 @@ import { createDefaultRegistry as createToolRegistry, type LoadedSkill } from '.
 import type { GraphTracker } from '../graph/tracker.ts';
 import type { Orchestrator } from './orchestrator.ts';
 import type { DiffInterceptor } from '../diff/interceptor.ts';
+import type { McpRegistry } from '../mcp/registry.ts';
+import type { HookRegistry } from '../hooks/registry.ts';
+import type { SkillLoadResult } from '../skills/types.ts';
 
 interface SubagentContextOptions {
   id: string;
@@ -28,6 +32,9 @@ interface SubagentContextOptions {
   onPermissionPrompt?: Parameters<typeof runAgentLoop>[1]['onPermissionPrompt'];
   parentCostTracker?: CostTracker;
   diffInterceptor?: DiffInterceptor;
+  mcpRegistry?: McpRegistry;
+  hookRegistry?: HookRegistry;
+  skillResult?: SkillLoadResult;
 }
 
 export class SubagentContext {
@@ -48,6 +55,9 @@ export class SubagentContext {
   private readonly onPermissionPrompt?: SubagentContextOptions['onPermissionPrompt'];
   private readonly loadedSkills: LoadedSkill[];
   private readonly diffInterceptor?: DiffInterceptor;
+  private readonly mcpRegistry?: McpRegistry;
+  private readonly hookRegistry?: HookRegistry;
+  private readonly skillResult?: SkillLoadResult;
 
   constructor(options: SubagentContextOptions) {
     this.id = options.id;
@@ -65,6 +75,9 @@ export class SubagentContext {
     this.loadedSkills = [...(options.loadedSkills ?? [])];
     this.cwd = options.cwd;
     this.diffInterceptor = options.diffInterceptor;
+    this.mcpRegistry = options.mcpRegistry;
+    this.hookRegistry = options.hookRegistry;
+    this.skillResult = options.skillResult;
     this.costTracker = new CostTracker((entry) => {
       options.parentCostTracker?.recordEntry(entry);
     });
@@ -85,12 +98,23 @@ export class SubagentContext {
       }
 
       const adapter = modelRegistry.get(this.model);
+      const session = createHeadlessSession({
+        cwd: this.cwd,
+        config: this.config,
+        permissionEngine: this.permissionEngine,
+        model: this.model,
+        mcpRegistry: this.mcpRegistry,
+      });
       const tools = createToolRegistry({
         currentModel: this.model,
         orchestrator: this.orchestrator,
         agentId: this.id,
         depth: this.depth,
         diffInterceptor: this.diffInterceptor,
+        mcpRegistry: this.mcpRegistry,
+        permissionEngine: this.permissionEngine,
+        skillResult: this.skillResult,
+        session,
       });
       const systemPrompt = appendContextText(
         buildSubagentSystemPrompt(
@@ -101,6 +125,7 @@ export class SubagentContext {
       );
 
       this.messages.splice(0, this.messages.length, { role: 'user', content: prompt });
+      session.messages = this.messages;
       const result = await runAgentLoop(this.messages, {
         adapter,
         tools,
@@ -119,6 +144,8 @@ export class SubagentContext {
         parentAgentId: this.parentId,
         depth: this.depth,
         description: this.description,
+        hookRegistry: this.hookRegistry,
+        session,
       });
 
       const { provider, modelId } = parseModelString(this.model);

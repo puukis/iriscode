@@ -8,6 +8,7 @@ import { bus } from '../../shared/events.ts';
 import { PermissionEngine } from '../../permissions/engine.ts';
 import { ModelRegistry } from '../../models/registry.ts';
 import type { Message } from '../../shared/types.ts';
+import { isAbortError } from '../../shared/errors.ts';
 import { FakeAdapter, cleanupDir, makeTempDir, withEnv } from '../../shared/test-helpers.ts';
 import { ToolRegistry, type Tool } from '../../tools/index.ts';
 import { PROJECT_SETTINGS_FILE, PROJECT_STATE_DIR } from '../../config/project.ts';
@@ -108,6 +109,48 @@ describe('agent', () => {
     });
 
     expect(result.finalText).toBe('saved todo list');
+    cleanupDir(home);
+  });
+
+  test('runAgentLoop propagates aborts from the adapter stream', async () => {
+    const home = makeTempDir('iriscode-agent-home-');
+    const controller = new AbortController();
+    const adapter = new FakeAdapter('test', 'abort-model', async function* (params) {
+      await new Promise<never>((_, reject) => {
+        params.abortSignal?.addEventListener(
+          'abort',
+          () => reject(new DOMException('The operation was aborted.', 'AbortError')),
+          { once: true },
+        );
+      });
+      yield { type: 'done', stopReason: 'end_turn', inputTokens: 0, outputTokens: 0 };
+    });
+
+    const modelRegistry = new ModelRegistry();
+    modelRegistry.register('test/abort-model', adapter);
+    const tools = new ToolRegistry();
+
+    const run = withEnv({ HOME: home }, async () => {
+      const permissions = new PermissionEngine('default');
+      return runAgentLoop([{ role: 'user', content: 'Cancel this run' }], {
+        adapter,
+        tools,
+        permissions,
+        modelRegistry,
+        abortSignal: controller.signal,
+      });
+    });
+
+    controller.abort();
+
+    let aborted = false;
+    try {
+      await run;
+    } catch (error) {
+      aborted = isAbortError(error);
+    }
+
+    expect(aborted).toBe(true);
     cleanupDir(home);
   });
 

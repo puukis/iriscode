@@ -1,6 +1,8 @@
 import type { DiffResult } from './types.ts';
 import type { ResolvedConfig } from '../config/schema.ts';
 import type { GraphSnapshot } from '../graph/model.ts';
+import type { McpTool } from '../mcp/types.ts';
+import type { Message } from './types.ts';
 
 export interface IrisEvents {
   'agent:start': { depth: number; model: string; description: string };
@@ -68,7 +70,28 @@ export interface IrisEvents {
     summary: string;
   };
   'session:model-changed': { sessionId: string; model: string };
-  'session:message-added': { sessionId: string; role: string };
+  'session:message-added': { sessionId: string; role: string; message: Message };
+  'mcp:server-connected': {
+    serverName: string;
+    tools: McpTool[];
+  };
+  'mcp:server-disconnected': {
+    serverName: string;
+  };
+  'mcp:server-error': {
+    serverName: string;
+    error: string;
+  };
+  'mcp:tool-called': {
+    serverName: string;
+    toolName: string;
+    input: Record<string, unknown>;
+    isError: boolean;
+  };
+  /** Fired after each LLM API call with the raw input-token count for that call.
+   *  Because the full conversation history is sent on every call, this represents
+   *  the current context window fill — ideal for a context-usage bar. */
+  'context:usage': { inputTokens: number; model: string };
 }
 
 type EventHandler<T> = (payload: T) => void;

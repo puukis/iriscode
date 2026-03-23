@@ -12,7 +12,7 @@ const DEFAULT_TOOL_LIST = [
   'git-commit',
   'tool-search',
   'task',
-  'skill',
+  'Skill',
   'ask-user',
   'todo-write',
 ];

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { buildStartupSummary, estimateContextTokens } from '../startup-summary.ts';
+import { buildMcpStartupSummary, buildStartupSummary, estimateContextTokens } from '../startup-summary.ts';
 
 describe('startup summary', () => {
   test('estimates zero tokens when no context is loaded', () => {
@@ -25,5 +25,30 @@ describe('startup summary', () => {
     expect(buildStartupSummary('openai/gpt-4o-mini', 'plan', 10000, 'hello')).toContain(
       'mode: plan (dry run)',
     );
+  });
+
+  test('formats MCP startup summaries from connected servers', () => {
+    expect(buildMcpStartupSummary([
+      {
+        config: { name: 'filesystem', type: 'stdio', command: 'npx', args: [], enabled: true, required: false },
+        status: 'connected',
+        tools: Array.from({ length: 12 }, (_, index) => ({
+          name: `tool-${index}`,
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+          serverName: 'filesystem',
+        })),
+      },
+      {
+        config: { name: 'github', type: 'http', url: 'https://example.com/mcp', enabled: true, required: false },
+        status: 'connected',
+        tools: Array.from({ length: 8 }, (_, index) => ({
+          name: `tool-${index}`,
+          description: '',
+          inputSchema: { type: 'object', properties: {} },
+          serverName: 'github',
+        })),
+      },
+    ])).toBe('MCP: filesystem (12 tools), github (8 tools)');
   });
 });

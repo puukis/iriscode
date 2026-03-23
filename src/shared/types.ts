@@ -3,6 +3,8 @@ export type Role = 'user' | 'assistant' | 'system';
 export interface Message {
   role: Role;
   content: string | ContentBlock[];
+  isMeta?: boolean;
+  commandName?: string;
 }
 
 export type ContentBlock =
@@ -76,6 +78,7 @@ export interface StreamParams {
   tools: ToolDefinitionSchema[];
   systemPrompt?: string;
   maxTokens?: number;
+  abortSignal?: AbortSignal;
 }
 
 export interface ToolDefinitionSchema {
@@ -85,5 +88,6 @@ export interface ToolDefinitionSchema {
     type: 'object';
     properties: Record<string, unknown>;
     required?: string[];
-  };
+  } & Record<string, unknown>;
+  risk?: 'low' | 'medium' | 'high';
 }

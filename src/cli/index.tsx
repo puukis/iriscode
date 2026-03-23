@@ -1,8 +1,12 @@
 #!/usr/bin/env bun
 import React from 'react';
+import { existsSync, writeFileSync } from 'fs';
+import { homedir } from 'os';
+import { join, resolve } from 'path';
 import { loadConfig } from '../config/loader.ts';
 import { startConfigWatcher } from '../config/watcher.ts';
 import { logger } from '../shared/logger.ts';
+import { ensureDirectory } from '../config/utils.ts';
 import { runConfigCommand } from './commands/config.ts';
 import { runCostCommand } from './commands/cost.ts';
 import { runModelsCommand } from './commands/models.ts';
@@ -18,9 +22,19 @@ import { writeMemoryFromSession } from '../memory/memory-writer.ts';
 import { CompactionManager } from '../memory/compaction.ts';
 import type { Session } from '../agent/session.ts';
 import type { ModelRegistry } from '../models/registry.ts';
+import { buildExtensibilityStartupSummary, buildMcpStartupSummary } from './startup-summary.ts';
+import { McpRegistry } from '../mcp/registry.ts';
+import { McpServer } from '../mcp/server.ts';
+import { HookRegistry } from '../hooks/registry.ts';
+import { loadHooks } from '../hooks/loader.ts';
+import { runEventHooks } from '../hooks/runner.ts';
+import { loadPlugins, activatePlugin } from '../plugins/loader.ts';
+import { loadSkills } from '../skills/loader.ts';
+import { CommandRegistry } from '../commands/registry.ts';
 
 const cwd = process.cwd();
 const args = process.argv.slice(2);
+const mcpMode = args.includes('--mcp');
 const subcommand = args[0];
 
 let modelOverride: string | undefined;
@@ -40,6 +54,12 @@ for (let index = 0; index < args.length; index += 1) {
 
 const initialConfig = await loadConfig(cwd);
 logger.setLevel(initialConfig.log_level as Parameters<typeof logger.setLevel>[0]);
+
+if (mcpMode) {
+  const server = new McpServer();
+  await server.start();
+  process.exit(0);
+}
 
 if (subcommand === 'models') {
   await runModelsCommand();
@@ -62,8 +82,40 @@ if (subcommand === 'run') {
 }
 
 const initialMemoryFiles = await loadContextFilesForSession(cwd);
+await ensureExtensibilityReadmes();
+const hookRegistry = new HookRegistry();
+const [hookLoad, pluginResult, skillResult] = await Promise.all([
+  loadHooks(cwd, hookRegistry),
+  loadPlugins(cwd),
+  loadSkills(cwd),
+]);
+const mcpRegistry = new McpRegistry(initialConfig.mcp_servers);
+const bootstrapRegistry = new CommandRegistry();
+for (const plugin of pluginResult.plugins) {
+  await activatePlugin(plugin, bootstrapRegistry, skillResult, hookRegistry, mcpRegistry, cwd);
+}
+await mcpRegistry.initialize();
+hookLoad.errors.forEach((error) => logger.warn(error));
+pluginResult.errors.forEach((error) => logger.warn(`${error.path}: ${error.error}`));
+skillResult.errors.forEach((error) => logger.warn(`${error.path}: ${error.error}`));
+const mcpSummary = buildMcpStartupSummary(mcpRegistry.getServerStates());
+if (mcpSummary) {
+  process.stdout.write(`${mcpSummary}\n`);
+}
+const extensibilitySummary = buildExtensibilityStartupSummary(
+  skillResult,
+  pluginResult,
+  hookRegistry,
+  mcpRegistry.getServerStates().filter((state) => state.status === 'connected').length,
+);
+if (extensibilitySummary) {
+  process.stdout.write(`${extensibilitySummary}\n`);
+}
 const stopWatching = startConfigWatcher(cwd);
-process.on('exit', stopWatching);
+process.on('exit', () => {
+  stopWatching();
+  void mcpRegistry.disconnectAll();
+});
 
 // Build initial system prompt and check memory budget
 const basePrompt = buildDefaultSystemPrompt();
@@ -88,6 +140,10 @@ const app = renderApp(
     initialMemoryFiles={initialMemoryFiles}
     modelOverride={modelOverride}
     modeOverride={modeOverride}
+    mcpRegistry={mcpRegistry}
+    skillResult={skillResult}
+    hookRegistry={hookRegistry}
+    pluginResult={pluginResult}
     onReady={(ref) => {
       Object.assign(sessionRef, ref);
     }}
@@ -101,9 +157,17 @@ const app = renderApp(
 const shutdown = async () => {
   stopWatching();
   compactionManager?.stop();
+  await mcpRegistry.disconnectAll();
 
   const session = sessionRef.current;
   const registry = modelRegistryForExit;
+  if (session) {
+    await runEventHooks('session:end', {
+      event: 'session:end',
+      timing: 'post',
+      sessionId: session.id,
+    }, hookRegistry);
+  }
 
   if (session) {
     try {
@@ -139,4 +203,29 @@ async function loadContextFilesForSession(cwd: string): Promise<LoadedMemoryFile
     tokenCount: file.tokenCount,
     preview: file.text.split('\n').slice(0, 3).join('\n'),
   }));
+}
+
+async function ensureExtensibilityReadmes(): Promise<void> {
+  const baseDir = resolve(process.env.HOME ?? homedir(), '.iris');
+  const targets = [
+    {
+      path: join(baseDir, 'skills', 'README.md'),
+      content: '# IrisCode Skills\n\nPlace global skills here. Each skill lives in its own folder with a `SKILL.md` file.\n',
+    },
+    {
+      path: join(baseDir, 'plugins', 'README.md'),
+      content: '# IrisCode Plugins\n\nPlace installed global plugins here. Each plugin needs `.iris-plugin/plugin.json`.\n',
+    },
+    {
+      path: join(baseDir, 'hooks', 'README.md'),
+      content: '# IrisCode Hooks\n\nGlobal hooks live here. Define them in `hooks.json` and put executable scripts in `scripts/`.\n',
+    },
+  ];
+
+  for (const target of targets) {
+    const directory = ensureDirectory(resolve(target.path, '..'));
+    if (!existsSync(target.path)) {
+      writeFileSync(target.path, target.content, 'utf-8');
+    }
+  }
 }

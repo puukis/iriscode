@@ -1,6 +1,7 @@
 import { appendContextText, buildDefaultSystemPrompt } from '../../agent/system-prompt.ts';
 import { runAgentLoop } from '../../agent/loop.ts';
 import { Orchestrator } from '../../agent/orchestrator.ts';
+import { createHeadlessSession } from '../../agent/headless-session.ts';
 import { loadConfig } from '../../config/loader.ts';
 import { costTracker } from '../../cost/tracker.ts';
 import { DiffViewerController } from '../../diff/controller.ts';
@@ -10,6 +11,7 @@ import { createDefaultRegistry as createModelRegistry, parseModelString } from '
 import { PermissionEngine } from '../../permissions/engine.ts';
 import type { PermissionMode } from '../../permissions/types.ts';
 import { bus } from '../../shared/events.ts';
+import { logger } from '../../shared/logger.ts';
 import type { Message } from '../../shared/types.ts';
 import { GraphTracker } from '../../graph/tracker.ts';
 import {
@@ -17,6 +19,13 @@ import {
   type LoadedSkill,
   ToolRegistry,
 } from '../../tools/index.ts';
+import { McpRegistry } from '../../mcp/registry.ts';
+import { HookRegistry } from '../../hooks/registry.ts';
+import { loadHooks } from '../../hooks/loader.ts';
+import { runEventHooks } from '../../hooks/runner.ts';
+import { CommandRegistry } from '../../commands/registry.ts';
+import { activatePlugin, loadPlugins } from '../../plugins/loader.ts';
+import { loadSkills } from '../../skills/loader.ts';
 
 export interface RunCommandOptions {
   modelOverride?: string;
@@ -33,6 +42,17 @@ export async function runRunCommand(args: string[], options: RunCommandOptions =
   const config = await loadConfig(cwd);
   const modelKey = normalizeModelKey(options.modelOverride ?? config.model);
   const permissionMode = options.modeOverride ?? parsed.mode ?? config.permissions.mode;
+  const hookRegistry = new HookRegistry();
+  const [hookLoad, pluginResult, skillResult] = await Promise.all([
+    loadHooks(cwd, hookRegistry),
+    loadPlugins(cwd),
+    loadSkills(cwd),
+  ]);
+  const mcpRegistry = new McpRegistry(config.mcp_servers);
+  const bootstrapRegistry = new CommandRegistry();
+  for (const plugin of pluginResult.plugins) {
+    await activatePlugin(plugin, bootstrapRegistry, skillResult, hookRegistry, mcpRegistry, cwd);
+  }
 
   costTracker.reset();
 
@@ -55,20 +75,38 @@ export async function runRunCommand(args: string[], options: RunCommandOptions =
     costTracker,
     loadedSkills,
     diffInterceptor,
+    mcpRegistry,
+    hookRegistry,
+    skillResult,
   });
-  const tools = parsed.noTools
-    ? new ToolRegistry()
-    : createToolRegistry({
-        currentModel: modelKey,
-        orchestrator,
-        tracker: graphTracker,
-        agentId: 'root',
-        depth: 0,
-        diffInterceptor,
-      });
+  await mcpRegistry.initialize();
+  hookLoad.errors.forEach((error) => logger.warn(error));
+  pluginResult.errors.forEach((error) => logger.warn(`${error.path}: ${error.error}`));
+  skillResult.errors.forEach((error) => logger.warn(`${error.path}: ${error.error}`));
+  const session = createHeadlessSession({
+    cwd,
+    config,
+    permissionEngine: permissions,
+    model: modelKey,
+    mcpRegistry,
+  });
+  session.messages = history;
+  const tools = createToolRegistry({
+    currentModel: modelKey,
+    allowedTools: parsed.noTools ? [] : undefined,
+    orchestrator,
+    tracker: graphTracker,
+    agentId: 'root',
+    depth: 0,
+    diffInterceptor,
+    mcpRegistry,
+    permissionEngine: permissions,
+    skillResult,
+    session,
+  });
   const systemPrompt = appendContextText(
     buildDefaultSystemPrompt(
-      !parsed.noTools,
+      true,
       tools.getDefinitions().map((tool) => tool.name),
     ),
     config.context_text,
@@ -84,6 +122,11 @@ export async function runRunCommand(args: string[], options: RunCommandOptions =
   });
 
   const offFns = parsed.json ? attachJsonlEventStream() : [];
+  await runEventHooks('session:start', {
+    event: 'session:start',
+    timing: 'pre',
+    sessionId: session.id,
+  }, hookRegistry);
 
   try {
     let streamedOutput = '';
@@ -119,6 +162,8 @@ export async function runRunCommand(args: string[], options: RunCommandOptions =
         }
         return 'deny-once';
       },
+      hookRegistry,
+      session,
     });
 
     const { provider, modelId } = parseModelString(modelKey);
@@ -144,7 +189,13 @@ export async function runRunCommand(args: string[], options: RunCommandOptions =
       }
     }
   } finally {
+    await runEventHooks('session:end', {
+      event: 'session:end',
+      timing: 'post',
+      sessionId: session.id,
+    }, hookRegistry);
     offFns.forEach((off) => off());
+    await mcpRegistry.disconnectAll();
   }
 }
 

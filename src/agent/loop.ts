@@ -1,17 +1,22 @@
 import type { BaseAdapter } from '../models/base-adapter.ts';
-import type { ModelRegistry } from '../models/registry.ts';
+import { parseModelString, type ModelRegistry } from '../models/registry.ts';
 import type { PermissionsEngine } from '../permissions/engine.ts';
 import { derivePersistentToolPattern } from '../permissions/matcher.ts';
 import { canExecuteInPlanMode } from '../permissions/modes.ts';
 import type { PermissionRequest, PermissionResult } from '../permissions/types.ts';
 import type { CostTracker } from '../cost/tracker.ts';
-import type { Message, ContentBlock, ToolDefinitionSchema } from '../shared/types.ts';
-import { ToolError } from '../shared/errors.ts';
+import type { Message, ContentBlock, ToolDefinitionSchema, ToolResult } from '../shared/types.ts';
+import { ToolError, isAbortError } from '../shared/errors.ts';
 import { bus } from '../shared/events.ts';
 import { logger } from '../shared/logger.ts';
 import type { LoadedSkill, ToolExecutionContext, ToolRegistry } from '../tools/index.ts';
+import type { HookRegistry } from '../hooks/registry.ts';
+import { runEventHooks, runPostHooks, runPreHooks } from '../hooks/runner.ts';
+import { clearSkillContext } from '../skills/injector.ts';
+import type { SkillContextModifier } from '../skills/types.ts';
 import type { Orchestrator } from './orchestrator.ts';
 import type { GraphTracker } from '../graph/tracker.ts';
+import type { Session } from './session.ts';
 import { Planner } from './planner.ts';
 
 export type ToolPermissionChoice = 'allow-once' | 'allow-always' | 'deny-once' | 'deny-always';
@@ -44,6 +49,9 @@ export interface AgentLoopOptions {
     result: PermissionResult,
     tool?: ToolDefinitionSchema,
   ) => Promise<ToolPermissionChoice>;
+  abortSignal?: AbortSignal;
+  hookRegistry?: HookRegistry;
+  session?: Session;
 }
 
 export interface AgentLoopResult {
@@ -82,34 +90,57 @@ export async function runAgentLoop(
     onText,
     onInfo,
     onPermissionPrompt,
+    abortSignal,
+    hookRegistry,
+    session,
   } = options;
 
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let iterations = 0;
   let finalText = '';
+  let pendingModelOverride: string | null = null;
   const plannedToolCalls: Array<{ name: string; input: Record<string, unknown> }> = [];
 
+  if (session) {
+    session.messages = history;
+  }
+
   bus.emit('session:start', { model: `${adapter.provider}/${adapter.modelId}` });
+  bus.emit('agent:start', {
+    depth,
+    model: `${adapter.provider}/${adapter.modelId}`,
+    description,
+  });
   tracker?.agentStarted(agentId, parentAgentId, description, `${adapter.provider}/${adapter.modelId}`, depth);
 
   try {
+    if (hookRegistry) {
+      await runEventHooks('agent:start', {
+        event: 'agent:start',
+        timing: 'pre',
+        sessionId,
+      }, hookRegistry);
+    }
+
     while (iterations < maxIterations) {
       iterations++;
 
+      const activeAdapter = resolveAdapterForTurn(adapter, modelRegistry, pendingModelOverride);
+      pendingModelOverride = null;
       const toolDefs = tools.getDefinitions();
-      const effectiveSystemPrompt = composeSystemPrompt(systemPrompt, loadedSkills);
       const streamParams = {
         messages: history,
         tools: toolDefs,
-        systemPrompt: effectiveSystemPrompt,
+        systemPrompt,
         maxTokens,
+        abortSignal,
       };
 
       let assistantText = '';
       const toolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }> = [];
 
-      for await (const event of adapter.stream(streamParams)) {
+      for await (const event of activeAdapter.stream(streamParams)) {
         if (event.type === 'text') {
           assistantText += event.text ?? '';
           onText?.(event.text ?? '');
@@ -120,6 +151,12 @@ export async function runAgentLoop(
           totalOutputTokens += event.outputTokens ?? 0;
           if (event.stopReason !== 'tool_use') {
             finalText = assistantText;
+          }
+          if (event.inputTokens) {
+            bus.emit('context:usage', {
+              inputTokens: event.inputTokens,
+              model: `${activeAdapter.provider}/${activeAdapter.modelId}`,
+            });
           }
         }
       }
@@ -134,6 +171,9 @@ export async function runAgentLoop(
       history.push({ role: 'assistant', content: assistantContent });
 
       if (toolCalls.length === 0) {
+        if (session) {
+          clearSkillContext(session, permissions);
+        }
         if (!assistantText) {
           finalText = finalText || getMostRecentToolResultFallback(history) || '';
         }
@@ -143,10 +183,19 @@ export async function runAgentLoop(
       const toolResults: ContentBlock[] = [];
       for (const tc of toolCalls) {
         bus.emit('tool:start', { name: tc.name });
+        bus.emit('tool:call', {
+          id: tc.id,
+          name: tc.name,
+          input: tc.input,
+          agentId,
+          startedAt: Date.now(),
+        });
         const startMs = Date.now();
 
         let resultContent = '';
         let isError = false;
+        let contextModifier: SkillContextModifier | undefined;
+        let executedInput = tc.input;
 
         try {
           const request: PermissionRequest = {
@@ -180,13 +229,13 @@ export async function runAgentLoop(
                 'The user denied this tool request.',
               );
             } else {
-              ({ resultContent, isError } = await executeToolOrDryRun(
+              ({ resultContent, isError, contextModifier, executedInput } = await executeWithHooks(
                 tc,
                 tool,
                 permissions,
                 history,
                 cwd,
-                adapter,
+                activeAdapter,
                 modelRegistry,
                 tools,
                 loadedSkills,
@@ -200,16 +249,18 @@ export async function runAgentLoop(
                 plannedToolCalls,
                 orchestrator,
                 tracker,
+                hookRegistry,
+                sessionId,
               ));
             }
           } else {
-            ({ resultContent, isError } = await executeToolOrDryRun(
+            ({ resultContent, isError, contextModifier, executedInput } = await executeWithHooks(
               tc,
               tool,
               permissions,
               history,
               cwd,
-              adapter,
+              activeAdapter,
               modelRegistry,
               tools,
               loadedSkills,
@@ -223,7 +274,13 @@ export async function runAgentLoop(
               plannedToolCalls,
               orchestrator,
               tracker,
+              hookRegistry,
+              sessionId,
             ));
+          }
+
+          if (contextModifier?.modelOverride) {
+            pendingModelOverride = contextModifier.modelOverride;
           }
 
           if (isError) {
@@ -231,10 +288,28 @@ export async function runAgentLoop(
           } else {
             bus.emit('tool:end', { name: tc.name, durationMs: Date.now() - startMs });
           }
+          bus.emit('tool:result', {
+            id: tc.id,
+            name: tc.name,
+            input: executedInput,
+            output: resultContent,
+            isError,
+            durationMs: Date.now() - startMs,
+            agentId,
+          });
         } catch (err) {
           isError = true;
           resultContent = err instanceof Error ? err.message : String(err);
           bus.emit('tool:error', { name: tc.name, error: resultContent });
+          bus.emit('tool:result', {
+            id: tc.id,
+            name: tc.name,
+            input: executedInput,
+            output: resultContent,
+            isError,
+            durationMs: Date.now() - startMs,
+            agentId,
+          });
           logger.warn(`Tool error (${tc.name}):`, resultContent);
         }
 
@@ -256,9 +331,22 @@ export async function runAgentLoop(
       logger.warn(`Agent loop hit maxIterations (${maxIterations})`);
     }
   } catch (error) {
-    tracker?.agentFailed(agentId, error instanceof Error ? error.message : String(error));
+    tracker?.agentFailed(
+      agentId,
+      isAbortError(error) ? 'Cancelled.' : error instanceof Error ? error.message : String(error),
+    );
+    if (hookRegistry) {
+      await runEventHooks('agent:error', {
+        event: 'agent:error',
+        timing: 'post',
+        sessionId,
+      }, hookRegistry);
+    }
     throw error;
   } finally {
+    if (session) {
+      clearSkillContext(session, permissions);
+    }
     bus.emit('session:end', { totalInputTokens, totalOutputTokens });
   }
 
@@ -296,7 +384,119 @@ export async function runAgentLoop(
   }
 
   tracker?.agentFinished(agentId, finalText);
+  bus.emit('agent:done', {
+    depth,
+    model: `${adapter.provider}/${adapter.modelId}`,
+    description,
+    response: finalText,
+  });
+  if (hookRegistry) {
+    await runEventHooks('agent:done', {
+      event: 'agent:done',
+      timing: 'post',
+      sessionId,
+    }, hookRegistry);
+  }
   return { finalText, totalInputTokens, totalOutputTokens, iterations, plannedToolCalls };
+}
+
+async function executeWithHooks(
+  toolCall: { id: string; name: string; input: Record<string, unknown> },
+  tool: ReturnType<ToolRegistry['get']>,
+  permissions: PermissionsEngine,
+  history: Message[],
+  cwd: string,
+  adapter: BaseAdapter,
+  modelRegistry: ModelRegistry,
+  tools: ToolRegistry,
+  loadedSkills: LoadedSkill[],
+  subagentDepth: number,
+  depth: number,
+  agentId: string,
+  systemPrompt: string | undefined,
+  askUser: AgentLoopOptions['askUser'],
+  runSubagent: AgentLoopOptions['runSubagent'],
+  costTracker: AgentLoopOptions['costTracker'],
+  plannedToolCalls: AgentLoopResult['plannedToolCalls'],
+  orchestrator: AgentLoopOptions['orchestrator'],
+  tracker: AgentLoopOptions['tracker'],
+  hookRegistry: HookRegistry | undefined,
+  sessionId: string,
+): Promise<{ resultContent: string; isError: boolean; contextModifier?: SkillContextModifier; executedInput: Record<string, unknown> }> {
+  let executedInput = toolCall.input;
+
+  if (hookRegistry) {
+    const preHookResult = await runPreHooks(`tool:${toolCall.name}`, {
+      event: `tool:${toolCall.name}`,
+      timing: 'pre',
+      toolName: toolCall.name,
+      input: toolCall.input,
+      sessionId,
+    }, hookRegistry);
+
+    if (preHookResult.action === 'block') {
+      return {
+        resultContent: `🔒 ${preHookResult.blockReason ?? `Hook blocked ${toolCall.name}`}`,
+        isError: true,
+        executedInput,
+      };
+    }
+
+    if (preHookResult.modifiedInput) {
+      executedInput = preHookResult.modifiedInput;
+    }
+  }
+
+  const toolResult = await executeToolOrDryRun(
+    { ...toolCall, input: executedInput },
+    tool,
+    permissions,
+    history,
+    cwd,
+    adapter,
+    modelRegistry,
+    tools,
+    loadedSkills,
+    subagentDepth,
+    depth,
+    agentId,
+    systemPrompt,
+    askUser,
+    runSubagent,
+    costTracker,
+    plannedToolCalls,
+    orchestrator,
+    tracker,
+  );
+
+  if (hookRegistry) {
+    const postHookResult = await runPostHooks(`tool:${toolCall.name}`, {
+      event: `tool:${toolCall.name}`,
+      timing: 'post',
+      toolName: toolCall.name,
+      input: executedInput,
+      result: toolResult,
+      sessionId,
+    }, hookRegistry);
+
+    return {
+      resultContent: postHookResult.content,
+      isError: postHookResult.isError === true,
+      contextModifier: 'contextModifier' in toolResult
+        ? (toolResult as ToolResult & { contextModifier?: SkillContextModifier }).contextModifier
+        : undefined,
+      executedInput,
+    };
+  }
+
+  return {
+    resultContent: toolResult.content,
+    isError: toolResult.isError === true,
+    contextModifier: 'contextModifier' in toolResult
+      ? (toolResult as ToolResult & { contextModifier?: SkillContextModifier }).contextModifier
+      : undefined,
+    executedInput,
+  };
 }
 
 async function executeToolOrDryRun(
@@ -319,12 +519,11 @@ async function executeToolOrDryRun(
   plannedToolCalls: AgentLoopResult['plannedToolCalls'],
   orchestrator: AgentLoopOptions['orchestrator'],
   tracker: AgentLoopOptions['tracker'],
-): Promise<{ resultContent: string; isError: boolean }> {
+): Promise<ToolResult & { contextModifier?: SkillContextModifier }> {
   if (permissions.getMode() === 'plan' && !canExecuteInPlanMode(toolCall.name)) {
     plannedToolCalls.push({ name: toolCall.name, input: toolCall.input });
     return {
-      resultContent: formatPlanModeToolResult(toolCall.name, toolCall.input),
-      isError: false,
+      content: formatPlanModeToolResult(toolCall.name, toolCall.input),
     };
   }
 
@@ -354,22 +553,7 @@ async function executeToolOrDryRun(
   };
 
   const toolResult = await tool.execute(toolCall.input, toolContext);
-  return {
-    resultContent: toolResult.content,
-    isError: toolResult.isError === true,
-  };
-}
-
-function composeSystemPrompt(basePrompt: string | undefined, loadedSkills: LoadedSkill[]): string | undefined {
-  if (loadedSkills.length === 0) {
-    return basePrompt;
-  }
-
-  const skillPrompt = loadedSkills
-    .map((skill) => `Loaded skill "${skill.name}" from ${skill.path}:\n${skill.instructions}`)
-    .join('\n\n');
-
-  return [basePrompt, skillPrompt].filter(Boolean).join('\n\n');
+  return toolResult as ToolResult & { contextModifier?: SkillContextModifier };
 }
 
 function getMostRecentToolResultFallback(history: Message[]): string | undefined {
@@ -438,4 +622,27 @@ function getLastUserMessageText(history: Message[]): string | undefined {
   }
 
   return undefined;
+}
+
+function resolveAdapterForTurn(
+  baseAdapter: BaseAdapter,
+  modelRegistry: ModelRegistry,
+  modelOverride: string | null,
+): BaseAdapter {
+  if (!modelOverride) {
+    return baseAdapter;
+  }
+
+  const normalizedModel = normalizeModelKey(modelOverride);
+  if (!modelRegistry.has(normalizedModel)) {
+    logger.warn(`Ignoring unknown skill model override "${modelOverride}".`);
+    return baseAdapter;
+  }
+
+  return modelRegistry.get(normalizedModel);
+}
+
+function normalizeModelKey(model: string): string {
+  const { provider, modelId } = parseModelString(model);
+  return `${provider}/${modelId}`;
 }
