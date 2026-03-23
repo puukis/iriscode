@@ -121,6 +121,8 @@ function ConfigApp({
     ),
     memory: { ...initialConfig.memory },
     mcp_servers: [...initialConfig.mcp_servers],
+    mcp_oauth_callback_port: initialConfig.mcp_oauth_callback_port,
+    mcp_oauth_callback_url: initialConfig.mcp_oauth_callback_url,
     log_level: initialConfig.log_level,
   }));
   const [status, setStatus] = useState<string | null>(null);

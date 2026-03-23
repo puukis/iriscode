@@ -1,4 +1,5 @@
 import { loadConfig } from '../../config/loader.ts';
+import { McpRegistry } from '../../mcp/registry.ts';
 import { OllamaAdapter } from '../../models/providers/ollama.ts';
 import { ProviderError } from '../../shared/errors.ts';
 
@@ -24,6 +25,7 @@ const PROVIDERS: Array<{
 
 export async function runModelsCommand(): Promise<void> {
   const config = await loadConfig();
+  const mcpRegistry = new McpRegistry(config.mcp_servers);
 
   console.log('\nIrisCode — Available Models\n');
 
@@ -62,5 +64,21 @@ export async function runModelsCommand(): Promise<void> {
     }
   }
 
-  console.log('\nUsage: iriscode --model <provider>/<model>\n');
+  try {
+    try {
+      await mcpRegistry.initialize();
+    } catch {
+      // Non-required MCP server failures should not block model listing.
+    }
+
+    const connectedServers = mcpRegistry.getServerStates().filter((state) => state.status === 'connected');
+    const mcpToolCount = connectedServers.reduce((sum, state) => sum + state.tools.length, 0);
+    if (connectedServers.length > 0) {
+      console.log(`\n+ ${mcpToolCount} MCP tools from ${connectedServers.length} server${connectedServers.length === 1 ? '' : 's'}`);
+    }
+
+    console.log('\nUsage: iriscode --model <provider>/<model>\n');
+  } finally {
+    await mcpRegistry.disconnectAll();
+  }
 }

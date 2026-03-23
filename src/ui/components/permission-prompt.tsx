@@ -20,7 +20,7 @@ const OPTIONS: Array<{ label: string; value: ToolPermissionChoice; shortcut: str
 ];
 
 const LOW_RISK_TOOLS = new Set(['read', 'glob', 'grep', 'git-status', 'git-diff', 'tool-search', 'ask-user']);
-const MEDIUM_RISK_TOOLS = new Set(['write', 'edit', 'web-fetch', 'web-search', 'skill', 'todo-write']);
+const MEDIUM_RISK_TOOLS = new Set(['write', 'edit', 'web-fetch', 'web-search', 'skill', 'Skill', 'todo-write']);
 
 export function PermissionPrompt({ request, tool, onSelect }: PermissionPromptProps) {
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -28,7 +28,7 @@ export function PermissionPrompt({ request, tool, onSelect }: PermissionPromptPr
     () => formatPermissionInput(request.input).split('\n'),
     [request.input],
   );
-  const riskLevel = getPermissionRiskLevel(request.toolName);
+  const riskLevel = getPermissionRiskLevel(request.toolName, tool?.risk);
   const riskColor = getRiskColor(riskLevel);
 
   useInput((input, key) => {
@@ -126,7 +126,15 @@ export function formatPermissionInput(input: Record<string, unknown>): string {
   }
 }
 
-export function getPermissionRiskLevel(toolName: string): RiskLevel {
+export function getPermissionRiskLevel(toolName: string, riskOverride?: RiskLevel): RiskLevel {
+  if (riskOverride) {
+    return riskOverride;
+  }
+
+  if (toolName.includes(':')) {
+    return 'medium';
+  }
+
   if (LOW_RISK_TOOLS.has(toolName)) {
     return 'low';
   }

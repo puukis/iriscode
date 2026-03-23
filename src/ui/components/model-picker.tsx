@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import type { ResolvedConfig } from '../../config/schema.ts';
 import { PROVIDER_ENV_VARS } from '../../config/secrets.ts';
+import { useBracketedPaste } from '../stdin-proxy.ts';
 
 interface ModelPickerProps {
   currentModel: string;
@@ -57,6 +58,16 @@ export function ModelPicker({
     () => buildRows(availableModels, config, expandedProviders, query),
     [availableModels, config, expandedProviders, query],
   );
+
+  useBracketedPaste((content) => {
+    if (pendingKey) {
+      setApiKeyInput((current) => current + content);
+      return;
+    }
+
+    setQuery((current) => current + content);
+    setSelectedIndex(0);
+  }, { isActive: true });
 
   useInput((input, key) => {
     if (pendingKey) {

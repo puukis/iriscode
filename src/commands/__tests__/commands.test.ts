@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { CostTracker } from '../../cost/tracker.ts';
 import { DiffStore } from '../../diff/store.ts';
@@ -8,6 +9,7 @@ import { loadCustomCommands } from '../custom/loader.ts';
 import { runCustomCommand } from '../custom/runner.ts';
 import { registerSkillCommands } from '../skill-bridge.ts';
 import { handleInput } from '../../cli/input-handler.ts';
+import { loadSkills } from '../../skills/loader.ts';
 import type {
   CommandContext,
   LoadedMemoryFile,
@@ -111,8 +113,8 @@ describe('commands', () => {
   test('registerSkillCommands gives project skill commands priority over custom commands', async () => {
     const cwd = makeTempDir('iriscode-commands-project-');
     const home = makeTempDir('iriscode-commands-home-');
-    writeFile(join(cwd, '.iris', 'skills', 'review.skill.md'), 'Project skill');
-    writeFile(join(home, '.iris', 'skills', 'review.skill.md'), 'Global skill');
+    writeSkillFile(join(home, '.iris', 'skills', 'review', 'SKILL.md'), 'review', 'Global skill');
+    writeSkillFile(join(cwd, '.iris', 'skills', 'review', 'SKILL.md'), 'review', 'Project skill');
 
     await withEnv({ HOME: home }, async () => {
       const registry = new CommandRegistry();
@@ -123,10 +125,60 @@ describe('commands', () => {
         source: join(cwd, '.iris', 'commands', 'review.md'),
       });
 
-      await registerSkillCommands(registry, cwd);
+      registerSkillCommands(registry, await loadSkills(cwd));
       const resolved = registry.get('review');
       expect(resolved?.entry.category).toBe('skill');
-      expect(resolved?.entry.source).toBe(join(cwd, '.iris', 'skills', 'review.skill.md'));
+      expect(resolved?.entry.source).toBe(join(cwd, '.iris', 'skills', 'review', 'SKILL.md'));
+    });
+
+    cleanupDir(cwd);
+    cleanupDir(home);
+  });
+
+  test('handleInput auto-loads a skill command and forwards the remaining text as the prompt', async () => {
+    const cwd = makeTempDir('iriscode-commands-project-');
+    const home = makeTempDir('iriscode-commands-home-');
+
+    writeSkillFile(
+      join(cwd, '.iris', 'skills', 'frontend-design', 'SKILL.md'),
+      'frontend-design',
+      'Use this skill for polished UI work',
+      {
+        model: 'openai/gpt-4o-mini',
+        allowed_tools: 'Read, Write',
+      },
+      'Apply the frontend design workflow.',
+    );
+
+    await withEnv({ HOME: home }, async () => {
+      const ctx = makeCommandContext(cwd);
+      const skillResult = await loadSkills(cwd);
+      ctx.skillResult = skillResult;
+      const registry = createCommandRegistry(ctx);
+      registerSkillCommands(registry, skillResult);
+
+      const result = await handleInput('/frontend-design build a landing page', {
+        ...ctx,
+        registry,
+      });
+
+      expect(result).toBe('handled');
+      expect(ctx.__runPromptCalls).toEqual([
+        {
+          text: 'build a landing page',
+          allowedTools: undefined,
+          model: 'openai/gpt-4o-mini',
+        },
+      ]);
+      expect(ctx.session.messages).toHaveLength(2);
+      expect(ctx.session.messages[0]).toMatchObject({
+        role: 'user',
+        commandName: 'frontend-design',
+      });
+      expect(ctx.session.messages[1]).toMatchObject({
+        role: 'user',
+        isMeta: true,
+      });
     });
 
     cleanupDir(cwd);
@@ -213,6 +265,142 @@ describe('commands', () => {
     cleanupDir(cwd);
     cleanupDir(home);
   });
+
+  test('handleInput /clear clears the session and leaves only the slash command display entry', async () => {
+    const cwd = makeTempDir('iriscode-commands-project-');
+    const home = makeTempDir('iriscode-commands-home-');
+
+    await withEnv({ HOME: home }, async () => {
+      const ctx = makeCommandContext(cwd);
+      ctx.session.displayMessages.push(
+        { role: 'user', text: 'Old prompt' },
+        { role: 'assistant', text: 'Old answer' },
+      );
+
+      const registry = createCommandRegistry(ctx);
+      const result = await handleInput('/clear', { ...ctx, registry });
+
+      expect(result).toBe('handled');
+      expect(ctx.session.displayMessages).toEqual([
+        { role: 'user', text: '/clear' },
+      ]);
+      expect(ctx.__systemMessages).toEqual([]);
+    });
+
+    cleanupDir(cwd);
+    cleanupDir(home);
+  });
+
+  test('handleInput /memory edit-project opens a terminal editor and refreshes context', async () => {
+    const cwd = makeTempDir('iriscode-commands-project-');
+    const home = makeTempDir('iriscode-commands-home-');
+
+    await withEnv({ HOME: home, EDITOR: 'true' }, async () => {
+      const ctx = makeCommandContext(cwd);
+      let refreshed = 0;
+      let resumed = 0;
+      ctx.session.openMemoryMenu = async () => 'edit-project';
+      ctx.session.refreshContext = async () => {
+        refreshed += 1;
+      };
+      ctx.session.resumeUi = () => {
+        resumed += 1;
+      };
+
+      const registry = createCommandRegistry(ctx);
+      const result = await handleInput('/memory', { ...ctx, registry });
+
+      expect(result).toBe('handled');
+      expect(existsSync(join(cwd, 'IRIS.md'))).toBe(true);
+      expect(resumed).toBe(1);
+      expect(refreshed).toBe(1);
+    });
+
+    cleanupDir(cwd);
+    cleanupDir(home);
+  });
+
+  test('handleInput /init regenerates IRIS.md from repo and conversation while preserving config', async () => {
+    const cwd = makeTempDir('iriscode-commands-project-');
+    const home = makeTempDir('iriscode-commands-home-');
+
+    writeFile(
+      join(cwd, 'IRIS.md'),
+      [
+        '# Old context',
+        '',
+        'Legacy notes.',
+        '',
+        '## Config',
+        '',
+        '```yaml',
+        'model: openai/gpt-4o-mini',
+        'permissions:',
+        '  mode: plan',
+        '```',
+      ].join('\n'),
+    );
+    writeFile(
+      join(cwd, 'package.json'),
+      JSON.stringify({
+        name: 'iris-demo',
+        scripts: {
+          dev: 'bun run src/index.ts',
+        },
+      }, null, 2),
+    );
+    writeFile(join(cwd, 'src', 'index.ts'), 'export const answer = 42;\n');
+
+    await withEnv({ HOME: home }, async () => {
+      const ctx = makeCommandContext(cwd);
+      ctx.session.displayMessages.push(
+        { role: 'user', text: 'We are building a terminal coding assistant.' },
+        { role: 'assistant', text: 'The current focus is repo context and MCP support.' },
+      );
+
+      let executedPromptText = '';
+      let executedAllowedTools: string[] | undefined;
+      let refreshed = false;
+
+      ctx.session.executePrompt = async (request) => {
+        executedPromptText = request.text;
+        executedAllowedTools = request.allowedTools;
+        return [
+          '# Project Overview',
+          '',
+          'This project is a terminal coding assistant.',
+          '',
+          '## Architecture',
+          '',
+          '- Ink-based REPL',
+          '- Agent loop and tool system',
+        ].join('\n');
+      };
+      ctx.session.refreshContext = async () => {
+        refreshed = true;
+      };
+
+      const registry = createCommandRegistry(ctx);
+      const result = await handleInput('/init', { ...ctx, registry });
+
+      expect(result).toBe('handled');
+      expect(executedAllowedTools).toEqual([]);
+      expect(executedPromptText).toContain('We are building a terminal coding assistant.');
+      expect(executedPromptText).toContain('repo context and MCP support');
+      expect(executedPromptText).toContain('File: package.json');
+      expect(refreshed).toBe(true);
+
+      const written = readFileSync(join(cwd, 'IRIS.md'), 'utf-8');
+      expect(written).toContain('# Project Overview');
+      expect(written).toContain('## Architecture');
+      expect(written).toContain('## Config');
+      expect(written).toContain('model: openai/gpt-4o-mini');
+      expect(written).not.toContain('Legacy notes.');
+    });
+
+    cleanupDir(cwd);
+    cleanupDir(home);
+  });
 });
 
 function makeCommandContext(cwd: string): CommandContext & {
@@ -247,8 +435,12 @@ function makeCommandContext(cwd: string): CommandContext & {
       },
       memory: { max_tokens: 10000, max_lines: 200, warn_at: 8000 },
       mcp_servers: [],
+      mcp_oauth_callback_port: 5555,
       context_text: '',
       log_level: 'warn',
+      vim_mode: false,
+      notifications: 'bell',
+      shown_splash: false,
     },
     engine: new PermissionEngine('default', cwd),
     cwd,
@@ -265,6 +457,7 @@ function createMockSession(
   const memoryFiles: LoadedMemoryFile[] = [];
   const costTracker = new CostTracker();
   const diffStore = new DiffStore();
+  let nextPromptModelOverride: string | null = null;
 
   return {
     id: 'session-test',
@@ -278,10 +471,13 @@ function createMockSession(
     contextText: '',
     memoryFiles,
     memoryMaxTokens: 10000,
+    cwd: process.cwd(),
     costTracker,
     diffStore,
     clear() {
       displayMessages.length = 0;
+      this.messages = [];
+      nextPromptModelOverride = null;
     },
     compact(summary: string) {
       systemMessages.push(summary);
@@ -292,8 +488,9 @@ function createMockSession(
       runPromptCalls.push({
         text: request.text,
         allowedTools: request.allowedTools,
-        model: request.model,
+        model: request.model ?? (nextPromptModelOverride ?? undefined),
       });
+      nextPromptModelOverride = null;
     },
     async executePrompt(request) {
       return request.text;
@@ -304,6 +501,10 @@ function createMockSession(
     writeError(text: string) {
       systemMessages.push(text);
     },
+    showCommand(text: string) {
+      displayMessages.push({ role: 'user', text });
+    },
+    resumeUi() {},
     async ask() {
       return 'y';
     },
@@ -316,10 +517,50 @@ function createMockSession(
     async openSessionPicker(_sessions: SessionSnapshotSummary[]) {
       return undefined;
     },
+    async openMemoryMenu() {
+      return undefined;
+    },
+    async openMcpMenu() {
+      return undefined;
+    },
+    async openPicker() {
+      return undefined;
+    },
     async viewDiff() {
       return undefined;
     },
     restoreSession(_snapshot: SessionSnapshot) {},
     async refreshContext() {},
+    addMessage(message) {
+      this.messages.push(message);
+    },
+    setNextPromptModelOverride(model) {
+      nextPromptModelOverride = model;
+    },
+    consumeNextPromptModelOverride() {
+      const nextModel = nextPromptModelOverride ?? undefined;
+      nextPromptModelOverride = null;
+      return nextModel;
+    },
   };
+}
+
+function writeSkillFile(
+  path: string,
+  name: string,
+  description: string,
+  overrides: Record<string, string> = {},
+  instructions = 'Use this skill.',
+): void {
+  const frontmatterLines = [
+    '---',
+    `name: ${name}`,
+    `description: ${description}`,
+    ...Object.entries(overrides).map(([key, value]) => `${key}: ${value}`),
+    '---',
+    '',
+    instructions,
+  ];
+
+  writeFile(path, frontmatterLines.join('\n'));
 }

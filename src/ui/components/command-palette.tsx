@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { Box, Text } from 'ink';
 import type { CommandEntry } from '../../commands/types.ts';
+import { theme } from '../theme.ts';
 
 interface CommandPaletteProps {
   query: string;
@@ -9,16 +10,16 @@ interface CommandPaletteProps {
 }
 
 const CATEGORY_COLORS: Record<CommandEntry['category'], 'blue' | 'green' | 'magenta'> = {
-  builtin: 'blue',
-  custom: 'green',
-  skill: 'magenta',
+  builtin: theme.colors.builtin,
+  custom: theme.colors.custom,
+  skill: theme.colors.skill,
 };
 
-export function CommandPalette({ query, entries, selectedIndex }: CommandPaletteProps) {
+export const CommandPalette = memo(function CommandPalette({ query, entries, selectedIndex }: CommandPaletteProps) {
   if (entries.length === 0) {
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor="gray" paddingX={1} marginBottom={1}>
-        <Text dimColor>No commands match "{query}".</Text>
+      <Box flexDirection="column" marginBottom={1} marginLeft={2}>
+        <Text color={theme.colors.dim}>{`No commands match "${query}".`}</Text>
       </Box>
     );
   }
@@ -26,28 +27,29 @@ export function CommandPalette({ query, entries, selectedIndex }: CommandPalette
   let previousCategory: CommandEntry['category'] | null = null;
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} marginBottom={1}>
+    <Box flexDirection="column" marginBottom={1} marginLeft={2}>
       {entries.map((entry, index) => {
         const showHeader = query.trim().length === 0 && previousCategory !== entry.category;
         previousCategory = entry.category;
+        const selected = index === selectedIndex;
 
         return (
           <React.Fragment key={`${entry.category}:${entry.name}`}>
             {showHeader ? (
-              <Text color="gray">{entry.category}</Text>
+              <Text color={theme.colors.dim}>{entry.category}</Text>
             ) : null}
             <Box>
-              <Text color={index === selectedIndex ? 'cyan' : undefined}>
-                {index === selectedIndex ? '› ' : '  '}
+              <Text color={selected ? theme.colors.primary : theme.colors.dim}>
+                {selected ? '› ' : '  '}
               </Text>
-              <Text bold color={index === selectedIndex ? 'cyan' : undefined}>{`/${entry.name}`}</Text>
-              <Text color={CATEGORY_COLORS[entry.category]}>{` [${entry.category}] `}</Text>
-              <Text>{entry.description}</Text>
-              {entry.argumentHint ? <Text dimColor>{`  ${entry.argumentHint}`}</Text> : null}
+              <Text bold color={selected ? theme.colors.text : undefined}>{`/${entry.name}`}</Text>
+              <Text color={CATEGORY_COLORS[entry.category]}>{' • '}</Text>
+              <Text color={theme.colors.dim}>{entry.description}</Text>
+              {entry.argumentHint ? <Text color={theme.colors.dim}>{`  ${entry.argumentHint}`}</Text> : null}
             </Box>
           </React.Fragment>
         );
       })}
     </Box>
   );
-}
+});

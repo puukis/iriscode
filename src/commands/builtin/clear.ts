@@ -9,7 +9,7 @@ export const CLEAR_COMMAND: CommandEntry = {
 export const handleClear: BuiltinHandler = async (ctx) => {
   try {
     ctx.session.clear();
-    ctx.session.writeInfo('Session cleared. Context window reset.');
+    ctx.session.showCommand('/clear');
     return { type: 'handled' };
   } catch (error) {
     return { type: 'error', message: error instanceof Error ? error.message : String(error) };

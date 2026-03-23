@@ -5,10 +5,27 @@ import type { DiffStore } from '../diff/store.ts';
 import type { PermissionEngine } from '../permissions/engine.ts';
 import type { PermissionMode } from '../permissions/types.ts';
 import type { DiffResult, Message, ToolDefinitionSchema } from '../shared/types.ts';
+import type { HookRegistry } from '../hooks/registry.ts';
+import type { PluginLoadResult } from '../plugins/types.ts';
+import type { SkillLoadResult } from '../skills/types.ts';
 
 export type CommandCategory = 'builtin' | 'custom' | 'skill';
 
 export type MemoryMenuAction = 'clear-project' | 'clear-global' | 'edit-project' | 'edit-global';
+
+export type McpMenuAction =
+  | 'list-servers'
+  | 'show-tools'
+  | 'reconnect'
+  | 'login'
+  | 'add-server'
+  | 'remove-server';
+
+export interface PickerOption {
+  label: string;
+  value: string;
+  description?: string;
+}
 
 export interface CommandEntry {
   name: string;
@@ -92,14 +109,21 @@ export interface SessionState {
   executePrompt(request: DetachedPromptRequest): Promise<string>;
   writeInfo(text: string): void;
   writeError(text: string): void;
+  showCommand(text: string): void;
+  resumeUi(): void;
   ask(question: string): Promise<string>;
   getToolDefinitions(allowedTools?: string[]): ToolDefinitionSchema[];
   openModelPicker(): Promise<string | undefined>;
   openSessionPicker(sessions: SessionSnapshotSummary[]): Promise<SessionSnapshotSummary | undefined>;
   openMemoryMenu(): Promise<MemoryMenuAction | undefined>;
+  openMcpMenu(): Promise<McpMenuAction | undefined>;
+  openPicker(options: PickerOption[], title?: string): Promise<string | undefined>;
   viewDiff(diff: DiffResult, options?: { readOnly?: boolean; autoAccept?: boolean }): Promise<DiffDecision | void>;
   restoreSession(snapshot: SessionSnapshot): void;
   refreshContext(): Promise<void>;
+  addMessage?(message: Message): void;
+  setNextPromptModelOverride?(model: string | null): void;
+  consumeNextPromptModelOverride?(): string | undefined;
 }
 
 export interface CommandContext {
@@ -108,8 +132,13 @@ export interface CommandContext {
   config: ResolvedConfig;
   engine: PermissionEngine;
   cwd: string;
+  registry?: import('./registry.ts').CommandRegistry;
   compactionManager?: import('../memory/compaction.ts').CompactionManager;
   modelRegistry?: import('../models/registry.ts').ModelRegistry;
+  mcpRegistry?: import('../mcp/registry.ts').McpRegistry;
+  skillResult?: SkillLoadResult;
+  hookRegistry?: HookRegistry;
+  pluginResult?: PluginLoadResult;
 }
 
 export type CommandResult =

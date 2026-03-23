@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text } from 'ink';
 import { bus } from '../../shared/events.ts';
 import type { GraphSnapshot } from '../../graph/model.ts';
@@ -15,7 +15,7 @@ interface RenderLine {
   color?: 'gray' | 'green' | 'yellow' | 'red' | 'white';
 }
 
-export function TaskGraph() {
+export const TaskGraph = memo(function TaskGraph() {
   const [snapshot, setSnapshot] = useState<GraphSnapshot | null>(null);
   const [spinnerIndex, setSpinnerIndex] = useState(0);
   const pendingSnapshotRef = useRef<GraphSnapshot | null>(null);
@@ -75,7 +75,7 @@ export function TaskGraph() {
       {hiddenCount > 0 ? <Text color="gray">{`... and ${hiddenCount} more agents`}</Text> : null}
     </Box>
   );
-}
+});
 
 function buildRenderLines(snapshot: GraphSnapshot, spinnerIndex: number, now: number): RenderLine[] {
   const nodes = new Map(snapshot.nodes.map((node) => [node.id, node]));

@@ -43,9 +43,17 @@ import {
   handleModels,
 } from './builtin/models.ts';
 import {
+  PLUGINS_COMMAND,
+  handlePlugins,
+} from './builtin/plugins.ts';
+import {
   SESSIONS_COMMAND,
   handleSessions,
 } from './builtin/sessions.ts';
+import {
+  SKILLS_COMMAND,
+  handleSkills,
+} from './builtin/skills.ts';
 import {
   STATUS_COMMAND,
   handleStatus,
@@ -89,6 +97,18 @@ export class CommandRegistry {
 
   get(name: string): RegisteredCommand | undefined {
     return this.commands.get(normalizeName(name));
+  }
+
+  unregister(name: string): void {
+    this.commands.delete(normalizeName(name));
+  }
+
+  clearNonBuiltin(): void {
+    for (const [name, command] of this.commands) {
+      if (command.entry.category !== 'builtin') {
+        this.commands.delete(name);
+      }
+    }
   }
 
   search(query: string): CommandEntry[] {
@@ -139,7 +159,9 @@ export function createDefaultRegistry(_ctx: CommandContext): CommandRegistry {
   registry.register(MEMORY_COMMAND, handleMemory);
   registry.register(MODE_COMMAND, handleMode);
   registry.register(MODELS_COMMAND, handleModels);
+  registry.register(PLUGINS_COMMAND, handlePlugins);
   registry.register(SESSIONS_COMMAND, handleSessions);
+  registry.register(SKILLS_COMMAND, handleSkills);
   registry.register(STATUS_COMMAND, handleStatus);
   registry.register(TODO_COMMAND, handleTodo);
   registry.register(TOOLS_COMMAND, handleTools);

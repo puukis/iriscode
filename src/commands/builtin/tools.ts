@@ -15,7 +15,7 @@ const TOOL_GROUPS: Record<string, string> = {
   'git-commit': 'git',
   'tool-search': 'discovery',
   task: 'orchestration',
-  skill: 'orchestration',
+  Skill: 'orchestration',
   'ask-user': 'orchestration',
   'todo-write': 'orchestration',
 };
@@ -36,9 +36,9 @@ export const handleTools: BuiltinHandler = async (ctx) => {
         sessionId: ctx.session.id,
       }).decision;
       const status = decision === 'allow' ? 'AUTO-ALLOW' : decision === 'deny' ? 'AUTO-DENY' : 'PROMPT';
-      const risk = getPermissionRiskLevel(definition.name).toUpperCase();
+      const risk = getPermissionRiskLevel(definition.name, definition.risk).toUpperCase();
       const line = `${definition.name.padEnd(12)} ${status.padEnd(10)} ${risk.padEnd(6)} ${definition.description}`;
-      const group = TOOL_GROUPS[definition.name] ?? 'other';
+      const group = definition.name.includes(':') ? 'mcp' : (TOOL_GROUPS[definition.name] ?? 'other');
       grouped.set(group, [...(grouped.get(group) ?? []), line]);
     }
 
@@ -73,8 +73,8 @@ function sampleInputForTool(toolName: string): Record<string, unknown> {
       return { message: 'test commit' };
     case 'task':
       return { description: 'Investigate a bug' };
-    case 'skill':
-      return { name: 'review' };
+    case 'Skill':
+      return { command: 'review' };
     case 'ask-user':
       return { question: 'Continue?' };
     case 'todo-write':

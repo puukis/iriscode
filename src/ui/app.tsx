@@ -16,6 +16,10 @@ import { Splash } from './components/splash.tsx';
 import { IrisContext, type IrisContextValue, type IrisMessage } from './context.ts';
 import { REPL } from '../screens/REPL.tsx';
 import { loadGlobalConfig, writeGlobalConfig } from '../config/global.ts';
+import type { McpRegistry } from '../mcp/registry.ts';
+import type { HookRegistry } from '../hooks/registry.ts';
+import type { PluginLoadResult } from '../plugins/types.ts';
+import type { SkillLoadResult } from '../skills/types.ts';
 
 interface AppProps {
   cwd: string;
@@ -23,6 +27,10 @@ interface AppProps {
   initialMemoryFiles: LoadedMemoryFile[];
   modelOverride?: string;
   modeOverride?: PermissionMode;
+  mcpRegistry: McpRegistry;
+  skillResult: SkillLoadResult;
+  hookRegistry: HookRegistry;
+  pluginResult: PluginLoadResult;
   onReady?: (sessionRef: { current: Session | null }) => void;
   onCompactionManagerReady?: (cm: import('../memory/compaction.ts').CompactionManager, registry: import('../models/registry.ts').ModelRegistry) => void;
 }
@@ -73,6 +81,10 @@ export function App(props: AppProps) {
     diffInterceptorRef,
     graphTrackerRef,
     inputRouterRef,
+    mcpRegistry: props.mcpRegistry,
+    skillResult: props.skillResult,
+    hookRegistry: props.hookRegistry,
+    pluginResult: props.pluginResult,
     runtime,
     sessionPickerResolverRef,
   }), [props]);
@@ -102,6 +114,10 @@ async function markSplashShown(): Promise<void> {
     ...config,
     shown_splash: true,
   });
+}
+
+if (process.stdout.isTTY) {
+  process.stdout.write('\x1b[?2004h');
 }
 
 export function renderApp(element: React.ReactElement) {

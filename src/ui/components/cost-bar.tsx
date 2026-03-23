@@ -12,6 +12,7 @@ interface CostBarProps {
   memoryMaxTokens: number;
   sessionId: string;
   projectName: string;
+  mcpServerCount?: number;
 }
 
 export const CostBar = memo(function CostBar({
@@ -21,6 +22,7 @@ export const CostBar = memo(function CostBar({
   memoryMaxTokens,
   sessionId,
   projectName,
+  mcpServerCount = 0,
 }: CostBarProps) {
   const [cost, setCost] = useState({ input: 0, output: 0, totalUsd: 0 });
   const [budgetTokens, setBudgetTokens] = useState<number | null>(null);
@@ -66,6 +68,12 @@ export const CostBar = memo(function CostBar({
         <Text color={theme.colors.line}>{' '}</Text>
         <Text color={memoryColor}>{memoryBar}</Text>
         <Text color={memoryColor}>{` ${effectiveTokens.toLocaleString()} / ${effectiveMax.toLocaleString()} tokens`}</Text>
+        {mcpServerCount > 0 ? (
+          <>
+            <Text color={theme.colors.line}>{' │ '}</Text>
+            <Text color={theme.colors.accent}>{`MCP: ${mcpServerCount}`}</Text>
+          </>
+        ) : null}
         {!showSessionId ? (
           <>
             <Text color={theme.colors.line}>{' │ '}</Text>

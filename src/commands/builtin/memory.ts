@@ -1,7 +1,10 @@
+import { existsSync, mkdirSync, writeFileSync } from 'fs';
+import { dirname, resolve } from 'path';
 import type { BuiltinHandler, CommandEntry, MemoryMenuAction } from '../types.ts';
 import { loadIrisHierarchy } from '../../memory/loader.ts';
 import { checkBudget, MEMORY_TOKEN_LIMIT } from '../../memory/budget.ts';
 import { loadMemory, clearMemory } from '../../memory/store.ts';
+import { getGlobalContextPath } from '../../config/global.ts';
 
 export const MEMORY_COMMAND: CommandEntry = {
   name: 'memory',
@@ -78,11 +81,80 @@ async function executeMemoryAction(
       session.writeInfo('Global memory cleared.');
       break;
     case 'edit-project':
-      session.writeInfo('Open ./IRIS.md in your editor to edit project context.');
+      await openInTerminalEditor(resolve(cwd, 'IRIS.md'));
+      session.resumeUi();
+      await session.refreshContext();
       break;
     case 'edit-global':
-      session.writeInfo('Open ~/.iris/IRIS.md in your editor to edit global context.');
+      await openInTerminalEditor(getGlobalContextPath());
+      session.resumeUi();
+      await session.refreshContext();
       break;
+  }
+}
+
+async function openInTerminalEditor(filePath: string): Promise<void> {
+  ensureTextFileExists(filePath);
+
+  const editor = resolveTerminalEditor();
+  const stdin = process.stdin as NodeJS.ReadStream & {
+    isRaw?: boolean;
+    setRawMode?: (mode: boolean) => void;
+  };
+  const wasRaw = Boolean(stdin.isRaw);
+  const interactiveTty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+
+  if (interactiveTty && wasRaw) {
+    stdin.setRawMode?.(false);
+  }
+
+  if (interactiveTty) {
+    process.stdout.write('\x1b[?2004l');
+    process.stdout.write('\x1b[2J\x1b[3J\x1b[H');
+  }
+
+  try {
+    const result = Bun.spawnSync([...editor, filePath], {
+      stdin: 'inherit',
+      stdout: 'inherit',
+      stderr: 'inherit',
+    });
+
+    if (result.exitCode !== 0) {
+      throw new Error(`Editor exited with code ${result.exitCode}`);
+    }
+  } finally {
+    if (interactiveTty) {
+      process.stdout.write('\x1b[2J\x1b[3J\x1b[H');
+      process.stdout.write('\x1b[?2004h');
+    }
+    if (interactiveTty && wasRaw) {
+      stdin.setRawMode?.(true);
+    }
+  }
+}
+
+function resolveTerminalEditor(): string[] {
+  const candidates = [
+    process.env.EDITOR?.trim(),
+    'vim',
+    'nano',
+  ].filter((value): value is string => typeof value === 'string' && value.length > 0);
+
+  for (const candidate of candidates) {
+    const [command, ...args] = candidate.split(/\s+/).filter(Boolean);
+    if (command && Bun.which(command)) {
+      return [command, ...args];
+    }
+  }
+
+  throw new Error('No terminal editor found. Install vim or nano, or set $EDITOR.');
+}
+
+function ensureTextFileExists(filePath: string): void {
+  mkdirSync(dirname(filePath), { recursive: true });
+  if (!existsSync(filePath)) {
+    writeFileSync(filePath, '', 'utf-8');
   }
 }
 

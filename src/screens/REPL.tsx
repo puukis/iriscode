@@ -3,6 +3,7 @@ import { Box, Static, Text, useApp, useInput } from 'ink';
 import TextInput from 'ink-text-input';
 import { runAgentLoop, type ToolPermissionChoice } from '../agent/loop.ts';
 import { Session } from '../agent/session.ts';
+import { createHeadlessSession } from '../agent/headless-session.ts';
 import { appendContextText, buildDefaultSystemPrompt } from '../agent/system-prompt.ts';
 import { loadGlobalConfig } from '../config/global.ts';
 import { loadProjectConfig } from '../config/project.ts';
@@ -17,7 +18,12 @@ import { isAbortError } from '../shared/errors.ts';
 import { createDefaultRegistry as createCommandRegistry, CommandRegistry } from '../commands/registry.ts';
 import { loadCustomCommands } from '../commands/custom/loader.ts';
 import { registerSkillCommands } from '../commands/skill-bridge.ts';
-import type { LoadedMemoryFile, SessionSnapshotSummary } from '../commands/types.ts';
+import type {
+  LoadedMemoryFile,
+  McpMenuAction,
+  PickerOption,
+  SessionSnapshotSummary,
+} from '../commands/types.ts';
 import { handleInput } from '../cli/input-handler.ts';
 import { PermissionPrompt } from '../ui/components/permission-prompt.tsx';
 import { DiffViewer } from '../ui/components/diff-viewer.tsx';
@@ -26,6 +32,8 @@ import { SessionPicker } from '../ui/components/session-picker.tsx';
 import { TaskGraph } from '../ui/components/task-graph.tsx';
 import { CommandPalette } from '../ui/components/command-palette.tsx';
 import { PromptInput } from '../ui/components/prompt-input.tsx';
+import { CostBar } from '../ui/components/cost-bar.tsx';
+import { ActivityPanel, type ActivityEntry } from '../ui/components/activity-panel.tsx';
 import { AssistantTextMessage } from '../ui/components/messages/assistant-text-message.tsx';
 import { AssistantToolUseMessage } from '../ui/components/messages/assistant-tool-use-message.tsx';
 import { UserTextMessage } from '../ui/components/messages/user-text-message.tsx';
@@ -37,6 +45,7 @@ import { DiffInterceptor } from '../diff/interceptor.ts';
 import { DiffStore } from '../diff/store.ts';
 import { Notifier } from '../ui/services/notifier.ts';
 import { useTerminalSize } from '../ui/hooks/use-terminal-size.ts';
+import { useBracketedPaste } from '../ui/stdin-proxy.ts';
 import {
   createDefaultRegistry as createToolRegistry,
   type LoadedSkill,
@@ -44,6 +53,8 @@ import {
 import { logger } from '../shared/logger.ts';
 import { CompactionManager } from '../memory/compaction.ts';
 import type { ModelRegistry } from '../models/registry.ts';
+import { activatePlugin } from '../plugins/loader.ts';
+import { runEventHooks } from '../hooks/runner.ts';
 
 interface REPLProps {
   cwd: string;
@@ -53,6 +64,8 @@ interface REPLProps {
   modeOverride?: PermissionMode;
   onCompactionManagerReady?: (cm: CompactionManager, registry: ModelRegistry) => void;
 }
+
+const MAX_ACTIVITY_ENTRIES = 120;
 
 interface PendingPermissionPrompt {
   request: PermissionRequest;
@@ -75,6 +88,12 @@ type OverlayState =
   | {
       kind: 'memory-menu';
       resolve: (action?: import('../commands/types.ts').MemoryMenuAction) => void;
+    }
+  | {
+      kind: 'picker';
+      title: string;
+      options: PickerOption[];
+      resolve: (value?: string) => void;
     };
 
 export function REPL({
@@ -106,6 +125,13 @@ export function REPL({
   const [commandRegistry, setCommandRegistry] = useState<CommandRegistry | null>(null);
   const [paletteEntries, setPaletteEntries] = useState<ReturnType<CommandRegistry['list']>>([]);
   const [paletteSelectedIndex, setPaletteSelectedIndex] = useState(0);
+  const [contextUsage, setContextUsage] = useState<{ inputTokens: number; model: string } | null>(null);
+  const [mcpConnectedCount, setMcpConnectedCount] = useState(
+    () => iris.mcpRegistry.getServerStates().filter((state) => state.status === 'connected').length,
+  );
+  const [showActivity, setShowActivity] = useState(false);
+  const [activityEntries, setActivityEntries] = useState<ActivityEntry[]>([]);
+  const [transcriptResetVersion, setTranscriptResetVersion] = useState(0);
   const historyRef = useRef<Message[]>([]);
   const loadedSkillsRef = useRef<LoadedSkill[]>([]);
   const totalInputTokensRef = useRef(0);
@@ -119,7 +145,12 @@ export function REPL({
   const modelRegistryRef = useRef<ModelRegistry | null>(null);
   const compactionManagerRef = useRef<CompactionManager | null>(null);
   const commandHistory = useMemo(
-    () => messages.filter((message) => message.kind === 'user-text').map((message) => message.text),
+    () =>
+      messages
+        .filter((message): message is Extract<IrisMessage, { kind: 'user-text' }> =>
+          message.kind === 'user-text' && message.isMeta !== true,
+        )
+        .map((message) => message.text),
     [messages],
   );
   const diffStoreRef = useRef(new DiffStore());
@@ -132,6 +163,26 @@ export function REPL({
   const projectName = useMemo(() => cwd.split('/').filter(Boolean).at(-1) ?? cwd, [cwd]);
   const compactPath = useMemo(() => abbreviatePath(cwd), [cwd]);
   const providerLabel = useMemo(() => activeModel.split('/')[0] ?? 'model', [activeModel]);
+  const promptIsActive = !pendingPermission && !pendingDiff && !overlay && !pendingQuestion;
+
+  const appendActivityEntry = useCallback((entry: ActivityEntry) => {
+    setActivityEntries((current) => {
+      const next = [...current, entry];
+      return next.length > MAX_ACTIVITY_ENTRIES
+        ? next.slice(next.length - MAX_ACTIVITY_ENTRIES)
+        : next;
+    });
+  }, []);
+
+  const updateActivityEntry = useCallback((id: string, updater: (entry: ActivityEntry) => ActivityEntry) => {
+    setActivityEntries((current) =>
+      current.map((entry) => (entry.id === id ? updater(entry) : entry)),
+    );
+  }, []);
+
+  const toggleActivity = useCallback(() => {
+    setShowActivity((current) => !current);
+  }, []);
 
   useEffect(() => {
     notifierRef.current = new Notifier(config);
@@ -201,6 +252,14 @@ export function REPL({
           },
         ];
       });
+      appendActivityEntry({
+        id: `tool-${id}`,
+        createdAt: startedAt,
+        kind: 'tool',
+        status: 'running',
+        title: `Tool | ${name}`,
+        detail: formatToolActivityDetail(name, input),
+      });
     });
 
     const syncToolResult = bus.on('tool:result', ({ id, output, isError, durationMs }) => {
@@ -221,18 +280,141 @@ export function REPL({
           };
         }),
       );
+      updateActivityEntry(`tool-${id}`, (entry) => ({
+        ...entry,
+        status: isError ? 'error' : 'success',
+        detail: [
+          entry.detail,
+          `Duration: ${durationMs}ms`,
+          `Output: ${truncateForActivity(output, 1200)}`,
+        ].filter(Boolean).join('\n\n'),
+      }));
     });
 
     const syncConfigReload = bus.on('config:reloaded', ({ config: nextConfig }) => {
       setConfig(nextConfig);
     });
 
+    const syncSessionMessage = bus.on('session:message-added', ({ sessionId, message }) => {
+      if (sessionId !== iris.runtime.sessionIdRef.current) {
+        return;
+      }
+      if (message.role !== 'user' || typeof message.content !== 'string') {
+        return;
+      }
+
+      const nextMessage: IrisMessage = {
+        id: `session-user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        kind: 'user-text',
+        role: 'user',
+        text: message.content,
+        isMeta: message.isMeta,
+        commandName: message.commandName,
+        createdAt: Date.now(),
+        complete: true,
+      };
+
+      setMessages((current) => [...current, nextMessage]);
+    });
+
+    const syncAgentStart = bus.on('agent:start', ({ depth, model, description }) => {
+      appendActivityEntry({
+        id: `agent-start-${Date.now()}-${depth}-${model}`,
+        createdAt: Date.now(),
+        kind: 'agent',
+        status: 'running',
+        title: `Agent | ${model}${depth > 0 ? ` | depth ${depth}` : ''}`,
+        detail: summarizeAgentDescription(description),
+      });
+    });
+
+    const syncAgentDone = bus.on('agent:done', ({ depth, model, description, response }) => {
+      appendActivityEntry({
+        id: `agent-done-${Date.now()}-${depth}-${model}`,
+        createdAt: Date.now(),
+        kind: 'agent',
+        status: 'success',
+        title: `Agent done | ${model}${depth > 0 ? ` | depth ${depth}` : ''}`,
+        detail: [
+          summarizeAgentDescription(description),
+          response.trim() ? `Response: ${truncateForActivity(response, 1000)}` : '',
+        ].filter(Boolean).join('\n\n'),
+      });
+    });
+
+    const syncMcpConnected = bus.on('mcp:server-connected', ({ serverName, tools }) => {
+      appendActivityEntry({
+        id: `mcp-connected-${Date.now()}-${serverName}`,
+        createdAt: Date.now(),
+        kind: 'mcp',
+        status: 'success',
+        title: `MCP connected | ${serverName}`,
+        detail: `${tools.length} tool${tools.length === 1 ? '' : 's'} available`,
+      });
+    });
+
+    const syncMcpDisconnected = bus.on('mcp:server-disconnected', ({ serverName }) => {
+      appendActivityEntry({
+        id: `mcp-disconnected-${Date.now()}-${serverName}`,
+        createdAt: Date.now(),
+        kind: 'mcp',
+        status: 'neutral',
+        title: `MCP disconnected | ${serverName}`,
+      });
+    });
+
+    const syncMcpError = bus.on('mcp:server-error', ({ serverName, error }) => {
+      appendActivityEntry({
+        id: `mcp-error-${Date.now()}-${serverName}`,
+        createdAt: Date.now(),
+        kind: 'mcp',
+        status: 'error',
+        title: `MCP error | ${serverName}`,
+        detail: error,
+      });
+    });
+
     return () => {
       syncToolCall();
       syncToolResult();
       syncConfigReload();
+      syncSessionMessage();
+      syncAgentStart();
+      syncAgentDone();
+      syncMcpConnected();
+      syncMcpDisconnected();
+      syncMcpError();
     };
+  }, [appendActivityEntry, updateActivityEntry]);
+
+  useEffect(() => {
+    return bus.on('context:usage', ({ inputTokens, model }) => {
+      setContextUsage({ inputTokens, model });
+    });
   }, []);
+
+  useBracketedPaste((content) => {
+    setQuestionInput((current) => current + content);
+  }, { isActive: Boolean(pendingQuestion) });
+
+  useEffect(() => {
+    const syncMcpCount = () => {
+      setMcpConnectedCount(
+        iris.mcpRegistry.getServerStates().filter((state) => state.status === 'connected').length,
+      );
+    };
+
+    syncMcpCount();
+    const offConnected = bus.on('mcp:server-connected', syncMcpCount);
+    const offDisconnected = bus.on('mcp:server-disconnected', syncMcpCount);
+    const offError = bus.on('mcp:server-error', syncMcpCount);
+
+    return () => {
+      offConnected();
+      offDisconnected();
+      offError();
+    };
+  }, [iris.mcpRegistry]);
 
   useEffect(() => {
     let cancelled = false;
@@ -247,12 +429,19 @@ export function REPL({
         config,
         engine: iris.permissionEngineRef.current,
         cwd,
+        mcpRegistry: iris.mcpRegistry,
+        skillResult: iris.skillResult,
+        hookRegistry: iris.hookRegistry,
+        pluginResult: iris.pluginResult,
       });
       const customCommands = await loadCustomCommands(cwd);
       for (const entry of customCommands) {
         registry.registerCustom(entry);
       }
-      await registerSkillCommands(registry, cwd);
+      for (const plugin of iris.pluginResult.plugins) {
+        await activatePlugin(plugin, registry, iris.skillResult, iris.hookRegistry, iris.mcpRegistry, cwd);
+      }
+      registerSkillCommands(registry, iris.skillResult);
       if (!cancelled) {
         iris.commandRegistryRef.current = registry;
         setCommandRegistry(registry);
@@ -266,6 +455,14 @@ export function REPL({
   }, [config, cwd, iris.commandRegistryRef, iris.permissionEngineRef, iris.sessionRef]);
 
   const writeSystemMessage = useCallback((text: string) => {
+    appendActivityEntry({
+      id: `activity-info-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      createdAt: Date.now(),
+      kind: 'info',
+      status: 'neutral',
+      title: truncateForActivity(text, 160),
+      detail: text.length > 160 ? text : undefined,
+    });
     setMessages((current) => [
       ...current,
       {
@@ -277,11 +474,29 @@ export function REPL({
         complete: true,
       },
     ]);
-  }, []);
+  }, [appendActivityEntry]);
 
   const writeErrorMessage = useCallback((text: string) => {
-    writeSystemMessage(`Error: ${text}`);
-  }, [writeSystemMessage]);
+    appendActivityEntry({
+      id: `activity-error-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      createdAt: Date.now(),
+      kind: 'error',
+      status: 'error',
+      title: truncateForActivity(text, 160),
+      detail: text.length > 160 ? text : undefined,
+    });
+    setMessages((current) => [
+      ...current,
+      {
+        id: `system-${Date.now()}-${current.length}`,
+        kind: 'system',
+        role: 'system',
+        text: `Error: ${text}`,
+        createdAt: Date.now(),
+        complete: true,
+      },
+    ]);
+  }, [appendActivityEntry]);
 
   const askUser = useCallback(async (question: string): Promise<string> => {
     return new Promise<string>((resolve) => {
@@ -350,30 +565,44 @@ export function REPL({
     const buffered = streamBufferRef.current;
     streamBufferRef.current = '';
     setMessages((current) => {
-      const last = current.at(-1);
-      if (last?.kind === 'assistant-text' && !last.complete) {
+      // Find the last incomplete assistant-text message (may not be current.at(-1) if
+      // tool-call messages were inserted after it during a multi-turn run).
+      let lastIncompleteIdx = -1;
+      for (let i = current.length - 1; i >= 0; i--) {
+        if (current[i].kind === 'assistant-text' && !current[i].complete) {
+          lastIncompleteIdx = i;
+          break;
+        }
+      }
+
+      if (lastIncompleteIdx === -1) {
         return [
-          ...current.slice(0, -1),
+          ...current,
           {
-            ...last,
-            text: `${last.text}${buffered || ''}` || fallbackText,
+            id: `assistant-final-${Date.now()}`,
+            kind: 'assistant-text',
+            role: 'assistant',
+            text: buffered || fallbackText || '(no response)',
+            createdAt: Date.now(),
             complete: true,
             isStreaming: false,
           },
         ];
       }
-      return [
-        ...current,
-        {
-          id: `assistant-final-${Date.now()}`,
-          kind: 'assistant-text',
-          role: 'assistant',
-          text: buffered || fallbackText || '(no response)',
-          createdAt: Date.now(),
-          complete: true,
-          isStreaming: false,
-        },
-      ];
+
+      // Finalize all incomplete assistant-text messages. The last one receives
+      // the remaining buffer + fallback; earlier orphans are finalized as-is
+      // (or removed if they are empty).
+      return current.flatMap((m, idx) => {
+        if (m.kind !== 'assistant-text' || m.complete) {
+          return [m];
+        }
+        if (idx === lastIncompleteIdx) {
+          return [{ ...m, text: `${m.text}${buffered || ''}` || fallbackText, complete: true, isStreaming: false }];
+        }
+        // Earlier orphan incomplete message: keep if it has text, drop if empty.
+        return m.text ? [{ ...m, complete: true, isStreaming: false }] : [];
+      });
     });
   }, []);
 
@@ -385,23 +614,30 @@ export function REPL({
     const buffered = streamBufferRef.current;
     streamBufferRef.current = '';
     setMessages((current) => {
-      const last = current.at(-1);
-      if (last?.kind !== 'assistant-text' || last.complete) {
+      // Finalize all incomplete assistant-text messages (not just the last, since
+      // tool-call messages may have been inserted after earlier streaming messages).
+      const hasIncomplete = current.some((m) => m.kind === 'assistant-text' && !m.complete);
+      if (!hasIncomplete) {
         return current;
       }
-      const text = `${last.text}${buffered || ''}`.trimEnd();
-      if (!text) {
-        return current.slice(0, -1);
+      let lastIncompleteIdx = -1;
+      for (let i = current.length - 1; i >= 0; i--) {
+        if (current[i].kind === 'assistant-text' && !current[i].complete) {
+          lastIncompleteIdx = i;
+          break;
+        }
       }
-      return [
-        ...current.slice(0, -1),
-        {
-          ...last,
-          text,
-          complete: true,
-          isStreaming: false,
-        },
-      ];
+      return current.flatMap((m, idx) => {
+        if (m.kind !== 'assistant-text' || m.complete) {
+          return [m];
+        }
+        if (idx === lastIncompleteIdx) {
+          const text = `${m.text}${buffered || ''}`.trimEnd();
+          return text ? [{ ...m, text, complete: true, isStreaming: false }] : [];
+        }
+        // Earlier orphan incomplete message.
+        return m.text ? [{ ...m, complete: true, isStreaming: false }] : [];
+      });
     });
   }, []);
 
@@ -416,6 +652,15 @@ export function REPL({
     const modelKey = normalizeModelKey(options.model ?? activeModel);
     const modelRegistry = await createModelRegistry(config);
     const adapter = modelRegistry.get(modelKey);
+    const detachedHistory: Message[] = [{ role: 'user', content: text }];
+    const detachedSession = createHeadlessSession({
+      cwd,
+      config,
+      permissionEngine: iris.permissionEngineRef.current,
+      model: modelKey,
+      mcpRegistry: iris.mcpRegistry,
+    });
+    detachedSession.messages = detachedHistory;
     const tools = createToolRegistry({
       currentModel: modelKey,
       allowedTools: options.allowedTools,
@@ -424,8 +669,12 @@ export function REPL({
       agentId: 'root',
       depth: 0,
       diffInterceptor: iris.diffInterceptorRef.current,
+      mcpRegistry: iris.mcpRegistry,
+      permissionEngine: iris.permissionEngineRef.current,
+      skillResult: iris.skillResult,
+      session: detachedSession,
     });
-    const result = await runAgentLoop([{ role: 'user', content: text }], {
+    const result = await runAgentLoop(detachedHistory, {
       adapter,
       tools,
       permissions: iris.permissionEngineRef.current,
@@ -442,6 +691,8 @@ export function REPL({
       agentId: 'root',
       depth: 0,
       description: text,
+      hookRegistry: iris.hookRegistry,
+      session: detachedSession,
     });
     return result.finalText;
   }, [activeModel, config, cwd, iris]);
@@ -455,10 +706,22 @@ export function REPL({
       permissionMode: activeMode,
       memoryFiles,
       diffStore: diffStoreRef.current,
+      mcpRegistry: iris.mcpRegistry,
       hooks: {
         onClear: () => {
           setMessages([]);
           historyRef.current = [];
+          setActivityEntries([]);
+          setContextUsage(null);
+          setPaletteEntries([]);
+          setPaletteSelectedIndex(0);
+          streamBufferRef.current = '';
+          if (streamIntervalRef.current) {
+            clearInterval(streamIntervalRef.current);
+            streamIntervalRef.current = null;
+          }
+          setTranscriptResetVersion((current) => current + 1);
+          process.stdout.write('\x1b[2J\x1b[3J\x1b[H');
         },
         onCompact: () => writeSystemMessage('Compacted. Context window refreshed.'),
         onRunPrompt: async (request) => {
@@ -467,6 +730,20 @@ export function REPL({
         onExecutePrompt: async (request) => executeDetachedPrompt(request.text, request),
         onInfo: writeSystemMessage,
         onError: writeErrorMessage,
+        onShowCommand: (text) => {
+          const nextMessage: IrisMessage = {
+            id: `user-command-${Date.now()}`,
+            kind: 'user-text',
+            role: 'user',
+            text,
+            createdAt: Date.now(),
+            complete: true,
+          };
+          setMessages((current) => current.length === 0 ? [nextMessage] : [...current, nextMessage]);
+        },
+        onResumeUi: () => {
+          setTranscriptResetVersion((current) => current + 1);
+        },
         onAsk: askUser,
         onGetToolDefinitions: (allowedTools) =>
           createToolRegistry({
@@ -477,6 +754,10 @@ export function REPL({
             agentId: 'root',
             depth: 0,
             diffInterceptor: iris.diffInterceptorRef.current,
+            mcpRegistry: iris.mcpRegistry,
+            permissionEngine: iris.permissionEngineRef.current,
+            skillResult: iris.skillResult,
+            session: iris.sessionRef.current ?? undefined,
           }).getDefinitions(),
         onViewDiff: async (diff, options) => {
           if (options?.readOnly) {
@@ -498,6 +779,31 @@ export function REPL({
           new Promise<import('../commands/types.ts').MemoryMenuAction | undefined>((resolve) => {
             setOverlay({ kind: 'memory-menu', resolve });
           }),
+        onOpenMcpMenu: async () =>
+          new Promise<McpMenuAction | undefined>((resolve) => {
+            setOverlay({
+              kind: 'picker',
+              title: 'MCP',
+              options: [
+                { label: 'List servers', value: 'list-servers', description: 'Show configured servers and status' },
+                { label: 'Show tools', value: 'show-tools', description: 'List all connected MCP tools' },
+                { label: 'Reconnect server', value: 'reconnect', description: 'Reconnect a configured server' },
+                { label: 'Login server', value: 'login', description: 'Run OAuth login for an HTTP server' },
+                { label: 'Add server', value: 'add-server', description: 'Append a server to ~/.iris/config.toml' },
+                { label: 'Remove server', value: 'remove-server', description: 'Remove a configured server' },
+              ],
+              resolve: (value) => resolve(value as McpMenuAction | undefined),
+            });
+          }),
+        onOpenPicker: async (options, title) =>
+          new Promise<string | undefined>((resolve) => {
+            setOverlay({
+              kind: 'picker',
+              title: title ?? 'Select item',
+              options,
+              resolve,
+            });
+          }),
         onRefreshContext: refreshContext,
         onSetModel: (model) => setActiveModel(normalizeModelKey(model)),
         onSetMode: (mode) => setActiveMode(mode),
@@ -506,6 +812,11 @@ export function REPL({
     iris.sessionRef.current = session;
     iris.graphTrackerRef.current = session.graphTracker;
     iris.runtime.sessionIdRef.current = session.id;
+    void runEventHooks('session:start', {
+      event: 'session:start',
+      timing: 'pre',
+      sessionId: session.id,
+    }, iris.hookRegistry);
   }
 
   const handleSubmit = useCallback(async (
@@ -551,7 +862,11 @@ export function REPL({
     iris.sessionRef.current!.messages = historyRef.current;
 
     try {
-      const modelKey = normalizeModelKey(modelOverrideForPrompt ?? activeModel);
+      const modelKey = normalizeModelKey(
+        modelOverrideForPrompt
+          ?? iris.sessionRef.current?.consumeNextPromptModelOverride?.()
+          ?? activeModel,
+      );
       const modelRegistry = await createModelRegistry(config);
       modelRegistryRef.current = modelRegistry;
       if (!compactionManagerRef.current && iris.sessionRef.current) {
@@ -572,6 +887,9 @@ export function REPL({
         onInfo: writeSystemMessage,
         onPermissionPrompt: requestPermission,
         diffInterceptor: iris.diffInterceptorRef.current,
+        mcpRegistry: iris.mcpRegistry,
+        hookRegistry: iris.hookRegistry,
+        skillResult: iris.skillResult,
       });
 
       const tools = createToolRegistry({
@@ -582,6 +900,10 @@ export function REPL({
         agentId: 'root',
         depth: 0,
         diffInterceptor: iris.diffInterceptorRef.current,
+        mcpRegistry: iris.mcpRegistry,
+        permissionEngine: iris.permissionEngineRef.current,
+        skillResult: iris.skillResult,
+        session: iris.sessionRef.current!,
       });
       const baseSystemPrompt = appendContextText(
         buildDefaultSystemPrompt(true, tools.getDefinitions().map((tool) => tool.name)),
@@ -609,6 +931,8 @@ export function REPL({
         onInfo: writeSystemMessage,
         onPermissionPrompt: requestPermission,
         abortSignal: abortController.signal,
+        hookRegistry: iris.hookRegistry,
+        session: iris.sessionRef.current!,
       });
 
       if (activeRunIdRef.current !== runId) {
@@ -669,6 +993,10 @@ export function REPL({
       registry: commandRegistry,
       compactionManager: compactionManagerRef.current ?? undefined,
       modelRegistry: modelRegistryRef.current ?? undefined,
+      mcpRegistry: iris.mcpRegistry,
+      skillResult: iris.skillResult,
+      hookRegistry: iris.hookRegistry,
+      pluginResult: iris.pluginResult,
     });
   };
   iris.runtime.cancelRef.current = () => {
@@ -719,11 +1047,13 @@ export function REPL({
 
   const messageRows = useMemo(
     () =>
-      messages.map((message) => ({
+      messages
+        .filter((message) => !('isMeta' in message) || message.isMeta !== true)
+        .map((message) => ({
         key: message.id,
         type: message.complete ? 'static' : 'transient',
         jsx: <RenderMessage key={message.id} message={message} />,
-      })),
+        })),
     [messages],
   );
 
@@ -734,10 +1064,19 @@ export function REPL({
 
   const paletteVisible = !pendingPermission && !pendingDiff && !overlay && paletteEntries.length > 0 && !running;
 
+  useInput((input, key) => {
+    if (promptIsActive) {
+      return;
+    }
+    if (key.ctrl && input === 'o') {
+      toggleActivity();
+    }
+  }, { isActive: !promptIsActive });
+
   return (
     <Box flexDirection="column" height="100%" paddingX={1}>
       <Box flexDirection="column" flexGrow={1}>
-        <Static items={staticItems}>
+        <Static key={`transcript-${transcriptResetVersion}`} items={staticItems}>
           {(item) => item.jsx}
         </Static>
 
@@ -855,7 +1194,24 @@ export function REPL({
         />
       ) : null}
 
+      {overlay?.kind === 'picker' ? (
+        <ListPicker
+          title={overlay.title}
+          options={overlay.options}
+          onCancel={() => {
+            overlay.resolve(undefined);
+            setOverlay(null);
+          }}
+          onSelect={(value) => {
+            overlay.resolve(value);
+            setOverlay(null);
+          }}
+        />
+      ) : null}
+
       <Text color={theme.colors.dim}>{divider}</Text>
+
+      {showActivity ? <ActivityPanel entries={activityEntries} maxVisible={Math.max(6, Math.floor(columns / 12))} /> : null}
 
       {paletteVisible ? (
         <CommandPalette
@@ -869,8 +1225,9 @@ export function REPL({
         history={commandHistory}
         registry={commandRegistry}
         isDisabled={running}
-        canCancelWithEscape={running && !pendingPermission && !pendingDiff && !overlay && !pendingQuestion}
-        canExitWithEscape={!running && !pendingPermission && !pendingDiff && !overlay && !pendingQuestion}
+        isActive={promptIsActive}
+        canCancelWithEscape={running && promptIsActive}
+        canExitWithEscape={!running && promptIsActive}
         placeholder=""
         onSubmit={async (value) => {
           const result = commandRegistry
@@ -878,12 +1235,16 @@ export function REPL({
                 args: [],
                 session: iris.sessionRef.current!,
                 config,
-                engine: iris.permissionEngineRef.current,
-                cwd,
-                registry: commandRegistry,
-                compactionManager: compactionManagerRef.current ?? undefined,
-                modelRegistry: modelRegistryRef.current ?? undefined,
-              })
+              engine: iris.permissionEngineRef.current,
+              cwd,
+              registry: commandRegistry,
+              compactionManager: compactionManagerRef.current ?? undefined,
+              modelRegistry: modelRegistryRef.current ?? undefined,
+              mcpRegistry: iris.mcpRegistry,
+              skillResult: iris.skillResult,
+              hookRegistry: iris.hookRegistry,
+              pluginResult: iris.pluginResult,
+            })
             : 'passthrough';
 
           if (result === 'passthrough') {
@@ -893,6 +1254,10 @@ export function REPL({
           }
         }}
         onCycleMode={handleCycleMode}
+        onOpenMcp={async () => {
+          await iris.runtime.sendCommandRef.current('/mcp');
+        }}
+        onToggleActivity={toggleActivity}
         onSuggestionsChange={({ suggestions, selectedIndex }) => {
           setPaletteEntries(suggestions);
           setPaletteSelectedIndex(selectedIndex);
@@ -901,24 +1266,20 @@ export function REPL({
 
       <Text color={theme.colors.dim}>{divider}</Text>
 
-      <Box justifyContent="space-between">
-        <Box>
-          <Text color={theme.colors.muted}>{friendlyModelLabel(activeModel)}</Text>
-          <Text color={theme.colors.line}>{' │ '}</Text>
-          <Text color={theme.colors.muted}>{projectName}</Text>
-          <Text color={theme.colors.line}>{' │ '}</Text>
-          <Text color={theme.colors.muted}>{`memory ${estimateContextTokens(config.context_text)}/${config.memory.max_tokens}`}</Text>
-          <Text color={theme.colors.line}>{' │ '}</Text>
-          <Text color={theme.colors.line}>{'● '}</Text>
-          <Text color={theme.colors.muted}>{activeMode}</Text>
-          <Text color={theme.colors.line}>{' · '}</Text>
-          <Text color={theme.colors.muted}>{iris.runtime.sessionIdRef.current}</Text>
-        </Box>
-      </Box>
+      <CostBar
+        model={activeModel}
+        mode={activeMode}
+        memoryTokens={estimateContextTokens(config.context_text)}
+        memoryMaxTokens={config.memory.max_tokens}
+        sessionId={iris.runtime.sessionIdRef.current}
+        projectName={projectName}
+        mcpServerCount={mcpConnectedCount}
+      />
+      <ContextBar contextUsage={contextUsage} columns={columns} />
       <Box>
         <Text color="magenta">{'►► '}</Text>
         <Text color={theme.colors.muted}>{modeLabel(activeMode)}</Text>
-        <Text color={theme.colors.dim}>{' (shift+tab to cycle)'}</Text>
+        <Text color={theme.colors.dim}>{` (shift+tab to cycle, ctrl+g for /mcp, ctrl+o ${showActivity ? 'to collapse activity' : 'for activity'})`}</Text>
       </Box>
     </Box>
   );
@@ -973,6 +1334,58 @@ function MemoryMenuPicker({
   );
 }
 
+function ListPicker({
+  title,
+  options,
+  onSelect,
+  onCancel,
+}: {
+  title: string;
+  options: PickerOption[];
+  onSelect: (value: string) => void;
+  onCancel: () => void;
+}) {
+  const [selectedIndex, setSelectedIndex] = useState(0);
+
+  useInput((_input, key) => {
+    if (key.escape) {
+      onCancel();
+      return;
+    }
+    if (key.upArrow) {
+      setSelectedIndex((current) => (current + options.length - 1) % Math.max(options.length, 1));
+      return;
+    }
+    if (key.downArrow) {
+      setSelectedIndex((current) => (current + 1) % Math.max(options.length, 1));
+      return;
+    }
+    if (key.return) {
+      const option = options[selectedIndex];
+      if (option) {
+        onSelect(option.value);
+      }
+    }
+  });
+
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor={theme.colors.accent} paddingX={1} marginBottom={1}>
+      <Text bold>{title}</Text>
+      {options.length === 0 ? (
+        <Text color={theme.colors.dim}>No items available.</Text>
+      ) : options.map((option, index) => (
+        <Box key={option.value} flexDirection="column">
+          <Text color={index === selectedIndex ? theme.colors.accent : undefined}>
+            {`${index === selectedIndex ? '›' : ' '} ${option.label}`}
+          </Text>
+          {option.description ? <Text color={theme.colors.dim}>{`   ${option.description}`}</Text> : null}
+        </Box>
+      ))}
+      <Text color={theme.colors.dim}>Use arrows and Enter to select. Esc cancels.</Text>
+    </Box>
+  );
+}
+
 function RenderMessage({ message }: { message: IrisMessage }) {
   if (message.kind === 'user-text') {
     return <UserTextMessage message={message} />;
@@ -989,6 +1402,7 @@ function RenderMessage({ message }: { message: IrisMessage }) {
 function toDisplayMessages(messages: IrisMessage[]) {
   return messages
     .filter((message) => message.kind !== 'assistant-tool-use')
+    .filter((message) => !('isMeta' in message) || message.isMeta !== true)
     .map((message) => ({
       role: message.role,
       text: message.text,
@@ -1014,6 +1428,39 @@ function normalizeModelKey(model: string): string {
   return `${provider}/${modelId}`;
 }
 
+function formatToolActivityDetail(name: string, input: Record<string, unknown>): string {
+  if (name === 'bash' && typeof input.command === 'string') {
+    return `Command: ${input.command}`;
+  }
+
+  if (name.includes(':') && Object.keys(input).length > 0) {
+    return `Input: ${truncateForActivity(JSON.stringify(input, null, 2), 800)}`;
+  }
+
+  if (Object.keys(input).length === 0) {
+    return 'Input: {}';
+  }
+
+  return `Input: ${truncateForActivity(JSON.stringify(input, null, 2), 800)}`;
+}
+
+function summarizeAgentDescription(description: string): string {
+  return truncateForActivity(
+    description
+      .replace(/\s+/g, ' ')
+      .trim(),
+    220,
+  );
+}
+
+function truncateForActivity(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  return `${value.slice(0, Math.max(0, maxLength - 3))}...`;
+}
+
 function estimateContextTokens(text: string): number {
   return Math.max(0, Math.ceil(text.length / 4));
 }
@@ -1036,4 +1483,86 @@ function modeLabel(mode: PermissionMode): string {
     case 'acceptEdits': return 'accept edits on';
     case 'plan': return 'plan mode';
   }
+}
+
+// Known context window sizes (in tokens) per model ID.
+const CONTEXT_WINDOW_SIZES: Record<string, number> = {
+  // Anthropic
+  'claude-opus-4-6':   200_000,
+  'claude-sonnet-4-6': 200_000,
+  'claude-haiku-4-5':  200_000,
+  // OpenAI
+  'gpt-4o':            128_000,
+  'gpt-4o-mini':       128_000,
+  'gpt-4-turbo':       128_000,
+  'o1':                128_000,
+  'o3-mini':           128_000,
+  // Google
+  'gemini-2.5-pro':    1_048_576,
+  'gemini-2.5-flash':  1_048_576,
+  'gemini-2.0-flash':  1_048_576,
+  // Groq / Meta
+  'llama-3.3-70b-versatile': 128_000,
+  'llama-3.1-8b-instant':    128_000,
+  // Mistral
+  'mistral-large-latest': 128_000,
+  'mistral-small-latest': 128_000,
+  'codestral-latest':     256_000,
+  // DeepSeek
+  'deepseek-chat':     64_000,
+  'deepseek-reasoner': 64_000,
+  // xAI
+  'grok-3':     131_072,
+  'grok-3-mini': 131_072,
+  'grok-2':     131_072,
+  // Mixtral
+  'mixtral-8x7b-32768': 32_768,
+  // Cohere
+  'command-r-plus': 128_000,
+  'command-r':      128_000,
+};
+
+function getContextWindowSize(modelKey: string): number {
+  // modelKey is like "anthropic/claude-sonnet-4-6"
+  const modelId = modelKey.includes('/') ? modelKey.split('/').slice(1).join('/') : modelKey;
+  return CONTEXT_WINDOW_SIZES[modelId] ?? 128_000;
+}
+
+function ContextBar({
+  contextUsage,
+  columns,
+}: {
+  contextUsage: { inputTokens: number; model: string } | null;
+  columns: number;
+}) {
+  if (!contextUsage || contextUsage.inputTokens === 0) {
+    return null;
+  }
+
+  const windowSize = getContextWindowSize(contextUsage.model);
+  const ratio = Math.min(1, contextUsage.inputTokens / windowSize);
+  const pct = Math.round(ratio * 100);
+
+  const pctLabel = `${pct}%`;
+  const barWidth = 9;
+  const filled = Math.round(ratio * barWidth);
+  const empty = barWidth - filled;
+
+  const filledBar = '█'.repeat(filled);
+  const emptyBar = '░'.repeat(empty);
+
+  const activeColor =
+    ratio >= 0.9
+      ? theme.colors.error
+      : ratio >= 0.75
+        ? theme.colors.warning
+        : theme.colors.success;
+
+  return (
+    <Box>
+      <Text color={activeColor}>{filledBar}</Text>
+      <Text color={activeColor}>{emptyBar}</Text>
+      <Text color={theme.colors.dim}>{`  ${pctLabel}`}</Text>
+    </Box>
+  );
 }

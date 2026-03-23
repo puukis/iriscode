@@ -1,6 +1,7 @@
 import type { CommandContext, CommandResult } from '../commands/types.ts';
 import type { CommandRegistry } from '../commands/registry.ts';
 import { runCustomCommand } from '../commands/custom/runner.ts';
+import { runSkillCommand } from '../commands/skill-bridge.ts';
 
 export interface InputHandlerContext extends CommandContext {
   registry: CommandRegistry;
@@ -38,11 +39,20 @@ export async function handleInput(
       config: ctx.config,
       engine: ctx.engine,
       cwd: ctx.cwd,
+      registry: ctx.registry,
+      compactionManager: ctx.compactionManager,
+      modelRegistry: ctx.modelRegistry,
+      mcpRegistry: ctx.mcpRegistry,
+      skillResult: ctx.skillResult,
+      hookRegistry: ctx.hookRegistry,
+      pluginResult: ctx.pluginResult,
     });
     return handleCommandResult(result, ctx);
   }
 
-  const result = await runCustomCommand(command.entry, args, ctx.cwd);
+  const result = command.entry.category === 'skill'
+    ? runSkillCommand(command.entry.name, args, ctx)
+    : await runCustomCommand(command.entry, args, ctx.cwd);
   return handleCommandResult(result, ctx);
 }
 

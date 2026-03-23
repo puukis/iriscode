@@ -29,5 +29,6 @@ describe('permission prompt', () => {
     expect(getPermissionRiskLevel('read')).toBe('low');
     expect(getPermissionRiskLevel('write')).toBe('medium');
     expect(getPermissionRiskLevel('bash')).toBe('high');
+    expect(getPermissionRiskLevel('filesystem:read_dir')).toBe('medium');
   });
 });
