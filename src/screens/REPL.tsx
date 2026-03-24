@@ -55,6 +55,14 @@ import { CompactionManager } from '../memory/compaction.ts';
 import type { ModelRegistry } from '../models/registry.ts';
 import { activatePlugin } from '../plugins/loader.ts';
 import { runEventHooks } from '../hooks/runner.ts';
+import {
+  clearBridgeDiffPrompt,
+  clearBridgePermissionPrompt,
+  openBridgeDiffPrompt,
+  openBridgePermissionPrompt,
+  registerBridgePromptControllers,
+  scheduleBridgeSessionSync,
+} from '../bridge/server.ts';
 
 interface REPLProps {
   cwd: string;
@@ -156,6 +164,7 @@ export function REPL({
   const diffStoreRef = useRef(new DiffStore());
   const diffControllerRef = useRef(
     new DiffViewerController((request) => {
+      openBridgeDiffPrompt(request);
       setPendingDiff(request);
     }),
   );
@@ -189,6 +198,13 @@ export function REPL({
   }, [config]);
 
   useEffect(() => {
+    registerBridgePromptControllers({
+      clearPermission: () => setPendingPermission(null),
+      clearDiff: () => setPendingDiff(null),
+    });
+  }, []);
+
+  useEffect(() => {
     iris.runtime.exitRef.current = async () => {
       try {
         await iris.sessionRef.current?.save();
@@ -208,6 +224,7 @@ export function REPL({
     if (iris.sessionRef.current) {
       iris.sessionRef.current.displayMessages = toDisplayMessages(messages);
     }
+    scheduleBridgeSessionSync();
   }, [iris.runtime.messagesRef, iris.sessionRef, messages]);
 
   useEffect(() => {
@@ -217,6 +234,7 @@ export function REPL({
     iris.runtime.isStreamingRef.current = streaming;
     iris.configRef.current = config;
     iris.permissionEngineRef.current.setMode(activeMode);
+    scheduleBridgeSessionSync();
   }, [activeMode, activeModel, config, iris, running, streaming]);
 
   useEffect(() => {
@@ -445,6 +463,7 @@ export function REPL({
       if (!cancelled) {
         iris.commandRegistryRef.current = registry;
         setCommandRegistry(registry);
+        scheduleBridgeSessionSync();
       }
     }
 
@@ -513,6 +532,7 @@ export function REPL({
   ): Promise<ToolPermissionChoice> => {
     notifierRef.current.notifyPermissionPrompt();
     return new Promise<ToolPermissionChoice>((resolve) => {
+      openBridgePermissionPrompt({ request, tool, resolve });
       setPendingPermission({ request, result, tool, resolve });
     });
   }, []);
@@ -1089,6 +1109,7 @@ export function REPL({
           tool={pendingPermission.tool}
           onSelect={(choice) => {
             pendingPermission.resolve(choice);
+            clearBridgePermissionPrompt();
             setPendingPermission(null);
           }}
         />
@@ -1104,6 +1125,7 @@ export function REPL({
             } else {
               pendingDiff.resolve();
             }
+            clearBridgeDiffPrompt();
             setPendingDiff(null);
           }}
           onReject={() => {
@@ -1112,6 +1134,7 @@ export function REPL({
             } else {
               pendingDiff.resolve();
             }
+            clearBridgeDiffPrompt();
             setPendingDiff(null);
           }}
           onAcceptAll={() => {
@@ -1123,6 +1146,7 @@ export function REPL({
             if (pendingDiff.kind === 'readonly') {
               pendingDiff.resolve();
             }
+            clearBridgeDiffPrompt();
             setPendingDiff(null);
           }}
         />

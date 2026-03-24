@@ -31,26 +31,34 @@ import { runEventHooks } from '../hooks/runner.ts';
 import { loadPlugins, activatePlugin } from '../plugins/loader.ts';
 import { loadSkills } from '../skills/loader.ts';
 import { CommandRegistry } from '../commands/registry.ts';
+import { BridgeServer } from '../bridge/server.ts';
 
 const cwd = process.cwd();
-const args = process.argv.slice(2);
-const mcpMode = args.includes('--mcp');
-const subcommand = args[0];
+const rawArgs = process.argv.slice(2);
+const mcpMode = rawArgs.includes('--mcp');
+const webMode = rawArgs.includes('--web');
+const args: string[] = [];
 
 let modelOverride: string | undefined;
 let modeOverride: PermissionMode | undefined;
-for (let index = 0; index < args.length; index += 1) {
-  if ((args[index] === '--model' || args[index] === '-m') && args[index + 1]) {
-    modelOverride = args[++index];
+for (let index = 0; index < rawArgs.length; index += 1) {
+  if ((rawArgs[index] === '--model' || rawArgs[index] === '-m') && rawArgs[index + 1]) {
+    modelOverride = rawArgs[++index];
     continue;
   }
-  if (args[index] === '--mode' && args[index + 1]) {
-    const value = args[++index];
+  if (rawArgs[index] === '--mode' && rawArgs[index + 1]) {
+    const value = rawArgs[++index];
     if (value === 'default' || value === 'acceptEdits' || value === 'plan') {
       modeOverride = value;
     }
+    continue;
   }
+  if (rawArgs[index] === '--web') {
+    continue;
+  }
+  args.push(rawArgs[index]);
 }
+const subcommand = args[0];
 
 const initialConfig = await loadConfig(cwd);
 logger.setLevel(initialConfig.log_level as Parameters<typeof logger.setLevel>[0]);
@@ -111,10 +119,18 @@ const extensibilitySummary = buildExtensibilityStartupSummary(
 if (extensibilitySummary) {
   process.stdout.write(`${extensibilitySummary}\n`);
 }
+const bridgeServer = webMode
+  ? new BridgeServer(Number.parseInt(process.env.IRIS_WEB_PORT ?? '7878', 10) || 7878)
+  : undefined;
+if (bridgeServer) {
+  bridgeServer.start();
+  process.stdout.write(`Web UI bridge available at ws://localhost:${process.env.IRIS_WEB_PORT ?? '7878'}\n`);
+}
 const stopWatching = startConfigWatcher(cwd);
 process.on('exit', () => {
   stopWatching();
   void mcpRegistry.disconnectAll();
+  bridgeServer?.stop();
 });
 
 // Build initial system prompt and check memory budget
@@ -144,6 +160,7 @@ const app = renderApp(
     skillResult={skillResult}
     hookRegistry={hookRegistry}
     pluginResult={pluginResult}
+    bridgeServer={bridgeServer}
     onReady={(ref) => {
       Object.assign(sessionRef, ref);
     }}
@@ -158,6 +175,7 @@ const shutdown = async () => {
   stopWatching();
   compactionManager?.stop();
   await mcpRegistry.disconnectAll();
+  bridgeServer?.stop();
 
   const session = sessionRef.current;
   const registry = modelRegistryForExit;

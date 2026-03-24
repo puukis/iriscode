@@ -20,6 +20,8 @@ import type { McpRegistry } from '../mcp/registry.ts';
 import type { HookRegistry } from '../hooks/registry.ts';
 import type { PluginLoadResult } from '../plugins/types.ts';
 import type { SkillLoadResult } from '../skills/types.ts';
+import type { BridgeServer } from '../bridge/server.ts';
+import { attachBridgeRuntime } from '../bridge/server.ts';
 
 interface AppProps {
   cwd: string;
@@ -31,6 +33,7 @@ interface AppProps {
   skillResult: SkillLoadResult;
   hookRegistry: HookRegistry;
   pluginResult: PluginLoadResult;
+  bridgeServer?: BridgeServer;
   onReady?: (sessionRef: { current: Session | null }) => void;
   onCompactionManagerReady?: (cm: import('../memory/compaction.ts').CompactionManager, registry: import('../models/registry.ts').ModelRegistry) => void;
 }
@@ -67,6 +70,22 @@ export function App(props: AppProps) {
     props.onReady?.(sessionRef);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!props.bridgeServer) {
+      return;
+    }
+
+    attachBridgeRuntime({
+      cwd: props.cwd,
+      sessionRef,
+      configRef,
+      commandRegistryRef,
+      graphTrackerRef,
+      permissionEngineRef,
+      runtime,
+    });
+  }, [props.bridgeServer, props.cwd, runtime]);
 
   const ctx = useMemo<IrisContextValue>(() => ({
     cwd: props.cwd,

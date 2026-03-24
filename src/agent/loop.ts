@@ -128,6 +128,7 @@ export async function runAgentLoop(
 
       const activeAdapter = resolveAdapterForTurn(adapter, modelRegistry, pendingModelOverride);
       pendingModelOverride = null;
+      const messageId = `${agentId}:assistant:${iterations}`;
       const toolDefs = tools.getDefinitions();
       const streamParams = {
         messages: history,
@@ -143,12 +144,21 @@ export async function runAgentLoop(
       for await (const event of activeAdapter.stream(streamParams)) {
         if (event.type === 'text') {
           assistantText += event.text ?? '';
+          bus.emit('token:stream', {
+            messageId,
+            text: event.text ?? '',
+          });
           onText?.(event.text ?? '');
         } else if (event.type === 'tool_call' && event.toolCall) {
           toolCalls.push(event.toolCall);
         } else if (event.type === 'done') {
           totalInputTokens += event.inputTokens ?? 0;
           totalOutputTokens += event.outputTokens ?? 0;
+          bus.emit('token:done', {
+            messageId,
+            inputTokens: event.inputTokens ?? 0,
+            outputTokens: event.outputTokens ?? 0,
+          });
           if (event.stopReason !== 'tool_use') {
             finalText = assistantText;
           }
@@ -182,6 +192,7 @@ export async function runAgentLoop(
 
       const toolResults: ContentBlock[] = [];
       for (const tc of toolCalls) {
+        const toolDefinition = toolDefs.find((definition) => definition.name === tc.name);
         bus.emit('tool:start', { name: tc.name });
         bus.emit('tool:call', {
           id: tc.id,
@@ -189,6 +200,7 @@ export async function runAgentLoop(
           input: tc.input,
           agentId,
           startedAt: Date.now(),
+          risk: resolveToolRisk(tc.name, toolDefinition?.risk),
         });
         const startMs = Date.now();
 
@@ -205,7 +217,6 @@ export async function runAgentLoop(
           };
           const permission = await permissions.check(request);
           const tool = tools.get(tc.name);
-          const toolDefinition = toolDefs.find((definition) => definition.name === tc.name);
 
           if (permission.decision === 'deny') {
             isError = true;
@@ -331,10 +342,15 @@ export async function runAgentLoop(
       logger.warn(`Agent loop hit maxIterations (${maxIterations})`);
     }
   } catch (error) {
-    tracker?.agentFailed(
-      agentId,
-      isAbortError(error) ? 'Cancelled.' : error instanceof Error ? error.message : String(error),
-    );
+    const errorMessage =
+      isAbortError(error) ? 'Cancelled.' : error instanceof Error ? error.message : String(error);
+    tracker?.agentFailed(agentId, errorMessage);
+    bus.emit('agent:error', {
+      depth,
+      model: `${adapter.provider}/${adapter.modelId}`,
+      description,
+      error: errorMessage,
+    });
     if (hookRegistry) {
       await runEventHooks('agent:error', {
         event: 'agent:error',
@@ -587,6 +603,29 @@ function formatDeniedToolResult(toolName: string, reason: string): string {
 
 function formatPlanModeToolResult(toolName: string, input: Record<string, unknown>): string {
   return `[PLAN MODE] Would execute ${toolName} with:\n${JSON.stringify(input, null, 2)}`;
+}
+
+function resolveToolRisk(
+  toolName: string,
+  riskOverride?: 'low' | 'medium' | 'high',
+): 'low' | 'medium' | 'high' {
+  if (riskOverride) {
+    return riskOverride;
+  }
+
+  if (toolName.includes(':')) {
+    return 'medium';
+  }
+
+  if (['read', 'glob', 'grep', 'git-status', 'git-diff', 'tool-search', 'ask-user'].includes(toolName)) {
+    return 'low';
+  }
+
+  if (['write', 'edit', 'web-search', 'web-fetch', 'todo-write', 'Skill', 'skill'].includes(toolName)) {
+    return 'medium';
+  }
+
+  return 'high';
 }
 
 function formatPlanSummary(plannedToolCalls: AgentLoopResult['plannedToolCalls']): string {

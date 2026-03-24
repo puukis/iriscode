@@ -197,6 +197,7 @@ export class Session implements SessionState {
   setMode(mode: PermissionMode): void {
     this.permissionMode = mode;
     this.permissionEngine.setMode(mode);
+    bus.emit('session:mode-changed', { sessionId: this.id, mode });
     this.hooks.onSetMode?.(mode);
   }
 
@@ -291,6 +292,7 @@ export class Session implements SessionState {
     this.costTracker.restore(snapshot.costEntries);
     this.orchestrator.updateRuntime({ currentModel: snapshot.model });
     this.permissionEngine.setMode(snapshot.permissionMode);
+    bus.emit('session:restored', { sessionId: this.id });
     this.hooks.onRestoreSnapshot?.(snapshot);
   }
 

@@ -7,6 +7,7 @@ import type { Message } from './types.ts';
 export interface IrisEvents {
   'agent:start': { depth: number; model: string; description: string };
   'agent:done': { depth: number; model: string; description: string; response: string };
+  'agent:error': { depth: number; model: string; description: string; error: string };
   'diff:ready': DiffResult;
   'diff:decision': {
     filePath: string;
@@ -22,6 +23,7 @@ export interface IrisEvents {
     input: Record<string, unknown>;
     agentId: string;
     startedAt: number;
+    risk: 'low' | 'medium' | 'high';
   };
   'tool:end': { name: string; durationMs: number };
   'tool:result': {
@@ -40,6 +42,15 @@ export interface IrisEvents {
     inputTokens: number;
     outputTokens: number;
     totalCostUsd: number;
+  };
+  'token:stream': {
+    messageId: string;
+    text: string;
+  };
+  'token:done': {
+    messageId: string;
+    inputTokens: number;
+    outputTokens: number;
   };
   'config:reloaded': {
     config: ResolvedConfig;
@@ -70,7 +81,9 @@ export interface IrisEvents {
     summary: string;
   };
   'session:model-changed': { sessionId: string; model: string };
+  'session:mode-changed': { sessionId: string; mode: 'default' | 'acceptEdits' | 'plan' };
   'session:message-added': { sessionId: string; role: string; message: Message };
+  'session:restored': { sessionId: string };
   'mcp:server-connected': {
     serverName: string;
     tools: McpTool[];
